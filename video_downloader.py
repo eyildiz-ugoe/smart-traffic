@@ -260,17 +260,41 @@ class TrafficVideoSetup:
             return False
 
 
+
+
 def print_manual_setup_guide():
-    """
-    Print instructions for manual setup.
-    """
+    """Print detailed instructions for manual setup."""
     print("\n" + "=" * 60)
     print("MANUAL SETUP GUIDE")
     print("=" * 60)
-    print("""
-If automatic setup fails, follow these steps:
+    print(
+        "If automatic setup fails, follow these steps:\n\n"
+        "1. Install Dependencies:\n"
+        "   pip install opencv-python numpy\n\n"
+        "2. Get Traffic Videos:\n"
+        "   - Download two contrasting clips that show different traffic densities.\n"
+        "   - Recommended samples (royalty free):\n"
+        "       * https://www.pexels.com/video/854100/\n"
+        "       * https://www.pexels.com/video/3044127/\n"
+        "   - Save them next to this script as road1.mp4 and road2.mp4.\n\n"
+        "3. Run the Simulation:\n"
+        "   python smart_traffic_system.py\n\n"
+        "4. (Optional) Record Metrics:\n"
+        "   - Observe the console logs to verify green light time adjustments.\n"
+        "   - Capture screenshots for documentation if needed.\n\n"
+        "Happy experimenting!"
+    )
+    print("=" * 60)
 
-1. Install Dependencies:
-   pip install opencv-python numpy
 
-2. Get Traffic Videos:
+def main():
+    """Entry point for the setup helper when executed as a script."""
+    setup = TrafficVideoSetup()
+
+    if not setup.run_full_setup():
+        print("\nAutomatic setup was not successful. Showing manual guide...")
+        print_manual_setup_guide()
+
+
+if __name__ == "__main__":
+    main()
