@@ -45,7 +45,7 @@ else:  # pragma: no cover - import success path depends on runtime environment
 class DetectorConfig:
     """Configuration options for the YOLO vehicle detector."""
 
-    model_path: str | Path = "yolov8x.pt"
+    model_path: str | Path = "weights/yolov8n.pt"
     confidence: float = 0.25
     iou: float = 0.5
     classes: Iterable[int] | None = None
