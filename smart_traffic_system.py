@@ -1,106 +1,112 @@
-"""
-Smart Traffic Light Automation System
-======================================
-A dynamic traffic light control system that uses YOLOv8 for vehicle detection
-and adjusts signal timing based on real-time traffic density on two roads.
+"""Real-time traffic light automation that relies on YOLOv8 vehicle detection."""
 
-Author: Traffic Automation Team
-Date: October 2025
-"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable, List, Tuple
 
 import cv2
 import numpy as np
-from typing import Tuple, List
 
 from traffic_core import TrafficLightController, TrafficStats
 
+try:  # pragma: no cover - exercised at runtime when YOLO is used
+    from ultralytics import YOLO
+except ImportError as exc:  # pragma: no cover - handled lazily in VehicleDetector
+    YOLO = None  # type: ignore[assignment]
+    _YOLO_IMPORT_ERROR = exc
+else:  # pragma: no cover - import success path depends on runtime environment
+    _YOLO_IMPORT_ERROR = None
+
+
+@dataclass(slots=True)
+class DetectorConfig:
+    """Configuration options for the YOLO vehicle detector."""
+
+    model_path: str | Path = "yolov8n.pt"
+    confidence: float = 0.25
+    iou: float = 0.5
+    classes: Iterable[int] | None = None
+    device: str | None = None
+
 
 class VehicleDetector:
-    """
-    Vehicle detection using background subtraction and contour analysis.
-    Alternative to YOLO for lightweight detection.
-    """
-    
-    def __init__(self, min_contour_area: int = 500):
-        """
-        Initialize the vehicle detector.
-        
-        Args:
-            min_contour_area: Minimum area threshold for vehicle detection
-        """
-        # Initialize background subtractor
-        self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(
-            history=500, 
-            varThreshold=50, 
-            detectShadows=True
-        )
-        self.min_contour_area = min_contour_area
-        self.kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        
+    """Vehicle detector backed by the Ultralytics YOLOv8 model."""
+
+    def __init__(self, config: DetectorConfig | None = None) -> None:
+        if YOLO is None:  # pragma: no cover - requires optional dependency
+            raise ImportError(
+                "ultralytics is required for YOLO vehicle detection. "
+                "Install it with `pip install ultralytics`."
+            ) from _YOLO_IMPORT_ERROR
+
+        self.config = config or DetectorConfig()
+        classes = list(self.config.classes) if self.config.classes is not None else [2, 3, 5, 7]
+        self._target_classes = set(int(cls) for cls in classes)
+
+        model_path = Path(self.config.model_path)
+        # YOLO accepts either a local path or a model name; don't resolve unless it exists locally
+        self.model = YOLO(str(model_path))
+        self.model.fuse()  # type: ignore[no-untyped-call]
+
     def detect_vehicles(self, frame: np.ndarray) -> Tuple[int, List[Tuple[int, int, int, int]]]:
-        """
-        Detect vehicles in the frame using background subtraction.
-        
-        Args:
-            frame: Input video frame
-            
-        Returns:
-            Tuple of (vehicle_count, list of bounding boxes)
-        """
-        # Apply background subtraction
-        fg_mask = self.bg_subtractor.apply(frame)
-        
-        # Remove shadows (value 127)
-        _, fg_mask = cv2.threshold(fg_mask, 200, 255, cv2.THRESH_BINARY)
-        
-        # Morphological operations to reduce noise
-        fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, self.kernel)
-        fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, self.kernel)
-        
-        # Find contours
-        contours, _ = cv2.findContours(
-            fg_mask,
-            cv2.RETR_EXTERNAL,
-            cv2.CHAIN_APPROX_SIMPLE
-        )
-        
-        # Filter contours and get bounding boxes
-        vehicles = []
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if area > self.min_contour_area:
-                x, y, w, h = cv2.boundingRect(contour)
-                vehicles.append((x, y, w, h))
-        
+        """Detect vehicles on a frame using YOLOv8."""
+
+        results = self.model(
+            frame,
+            verbose=False,
+            conf=self.config.confidence,
+            iou=self.config.iou,
+            device=self.config.device,
+        )[0]
+
+        vehicles: List[Tuple[int, int, int, int]] = []
+
+        if not hasattr(results, "boxes") or results.boxes is None:  # pragma: no cover - defensive
+            return 0, vehicles
+
+        for cls, conf, xyxy in zip(results.boxes.cls, results.boxes.conf, results.boxes.xyxy):
+            if int(cls) not in self._target_classes:
+                continue
+            if float(conf) < self.config.confidence:
+                continue
+
+            x1, y1, x2, y2 = map(int, xyxy.tolist())
+            vehicles.append((x1, y1, x2 - x1, y2 - y1))
+
         return len(vehicles), vehicles
 
 
 class SmartTrafficSystem:
-    """
-    Main system that integrates vehicle detection and traffic light control.
-    """
-    
-    def __init__(self, video_road1: str, video_road2: str):
+    """Main system that integrates YOLO detection with traffic light control."""
+
+    def __init__(
+        self,
+        video_road1: str,
+        video_road2: str,
+        detector_config: DetectorConfig | None = None,
+    ) -> None:
         """
         Initialize the smart traffic system.
-        
+
         Args:
             video_road1: Path to video file for road 1
             video_road2: Path to video file for road 2
+            detector_config: Optional configuration for the YOLO detector
         """
         # Initialize video captures
         self.cap_road1 = cv2.VideoCapture(video_road1)
         self.cap_road2 = cv2.VideoCapture(video_road2)
-        
+
         # Check if videos opened successfully
         if not self.cap_road1.isOpened():
             raise ValueError(f"Unable to open video: {video_road1}")
         if not self.cap_road2.isOpened():
             raise ValueError(f"Unable to open video: {video_road2}")
         
-        # Initialize detectors for each road
-        self.detector_road1 = VehicleDetector()
-        self.detector_road2 = VehicleDetector()
+        # Initialize detector shared between both roads
+        self.detector = VehicleDetector(detector_config)
         
         # Initialize traffic light controller
         self.controller = TrafficLightController()
@@ -153,66 +159,7 @@ class SmartTrafficSystem:
             cv2.circle(frame, (x_offset + 40, y_offset + y_pos), 25, (255, 255, 255), 2)
         
         return frame
-    
-    def draw_info_panel(self, frame: np.ndarray, stats: TrafficStats, 
-                       signal: str, time_remaining: float, road_name: str) -> np.ndarray:
-        """
-        Draw information panel on the frame.
-        
-        Args:
-            frame: Input frame
-            stats: Traffic statistics
-            signal: Current signal state
-            time_remaining: Time until signal change
-            road_name: Name of the road
-            
-        Returns:
-            Frame with info panel drawn
-        """
-        h, w = frame.shape[:2]
-        
-        # Create semi-transparent overlay
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (10, h - 150), (w - 10, h - 10), (0, 0, 0), -1)
-        frame = cv2.addWeighted(overlay, 0.7, frame, 0.3, 0)
-        
-        # Draw text information
-        y_pos = h - 120
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        
-        info_texts = [
-            f"{road_name}",
-            f"Vehicles: {stats.vehicle_count}",
-            f"Congestion: {stats.congestion_level}",
-            f"Signal: {signal} ({time_remaining:.1f}s)",
-        ]
-        
-        for text in info_texts:
-            cv2.putText(frame, text, (20, y_pos), font, 0.6, (255, 255, 255), 2)
-            y_pos += 30
-        
-        return frame
-    
-    def draw_detections(self, frame: np.ndarray, vehicles: List[Tuple[int, int, int, int]]) -> np.ndarray:
-        """
-        Draw bounding boxes around detected vehicles.
-        
-        Args:
-            frame: Input frame
-            vehicles: List of vehicle bounding boxes
-            
-        Returns:
-            Frame with detections drawn
-        """
-        for i, (x, y, w, h) in enumerate(vehicles):
-            # Draw bounding box
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-            # Draw vehicle ID
-            cv2.putText(frame, f"V{i+1}", (x, y - 10), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-        
-        return frame
-    
+
     def run(self):
         """
         Main loop to run the smart traffic system.
@@ -243,8 +190,8 @@ class SmartTrafficSystem:
                 frame2 = cv2.resize(frame2, (640, 480))
                 
                 # Detect vehicles on both roads
-                count1, vehicles1 = self.detector_road1.detect_vehicles(frame1)
-                count2, vehicles2 = self.detector_road2.detect_vehicles(frame2)
+                count1, _ = self.detector.detect_vehicles(frame1)
+                count2, _ = self.detector.detect_vehicles(frame2)
                 
                 # Update statistics
                 self.stats_road1.update(count1)
@@ -253,24 +200,10 @@ class SmartTrafficSystem:
                 # Update traffic signal timing
                 signal_status = self.controller.update_signal_timing(count1, count2)
                 
-                # Draw detections
-                frame1 = self.draw_detections(frame1, vehicles1)
-                frame2 = self.draw_detections(frame2, vehicles2)
-                
                 # Draw traffic lights
                 frame1 = self.draw_traffic_light(frame1, signal_status['road1'], 'top-right')
                 frame2 = self.draw_traffic_light(frame2, signal_status['road2'], 'top-right')
-                
-                # Draw info panels
-                frame1 = self.draw_info_panel(frame1, self.stats_road1, 
-                                             signal_status['road1'], 
-                                             signal_status['time_remaining'], 
-                                             "ROAD 1")
-                frame2 = self.draw_info_panel(frame2, self.stats_road2, 
-                                             signal_status['road2'], 
-                                             signal_status['time_remaining'], 
-                                             "ROAD 2")
-                
+
                 # Combine frames side by side
                 combined_frame = np.hstack([frame1, frame2])
                 
@@ -328,6 +261,10 @@ def main():
         print("\nPlease ensure you have two video files:")
         print("  - road1.mp4: Video of traffic on road 1")
         print("  - road2.mp4: Video of traffic on road 2")
+    except ImportError as e:
+        print("Error: Missing dependency -", e)
+        print("\nInstall the Ultralytics package with:\n  pip install ultralytics")
+        print("Ensure the YOLOv8 weights (e.g., yolov8n.pt) are available locally.")
     except Exception as e:
         print(f"Error: {e}")
 
