@@ -80,6 +80,11 @@ class QueueMetrics:
     sorted_detections: List[VehicleDetection]
     pressure: float
     class_breakdown: Dict[int, int]
+    approach_line: int
+    exit_line: int
+    stopline_occupied: bool
+    exit_zone_active: bool
+    leading_edge: Optional[int]
 
 
 class VehicleDetector:
@@ -143,9 +148,22 @@ class VehicleDetector:
 class VehicleQueueAnalyzer:
     """Derive queue metrics from raw vehicle detections."""
 
-    def __init__(self, orientation: str = "vertical") -> None:
+    def __init__(
+        self,
+        orientation: str = "vertical",
+        *,
+        approach_threshold_ratio: float = 0.65,
+        exit_margin: int = 5,
+    ) -> None:
+        if not 0.0 < approach_threshold_ratio < 1.0:
+            raise ValueError("approach_threshold_ratio must be between 0 and 1")
+        if exit_margin < 0:
+            raise ValueError("exit_margin must be non-negative")
+
         self.sorter = VehicleSorter(orientation=orientation)
         self.counter = VehicleCounter()
+        self._approach_threshold_ratio = approach_threshold_ratio
+        self._exit_margin = exit_margin
 
     @property
     def orientation(self) -> str:
@@ -156,12 +174,21 @@ class VehicleQueueAnalyzer:
     ) -> QueueMetrics:
         sorted_detections = self.sorter.sort(detections)
         pressure = self._calculate_pressure(frame_shape, sorted_detections)
+
+        approach_line, exit_line, stopline_occupied, exit_zone_active, leading_edge = (
+            self._calculate_thresholds(frame_shape, sorted_detections)
+        )
         count, class_breakdown = self.counter.summarize(sorted_detections)
         return QueueMetrics(
             count=count,
             sorted_detections=list(sorted_detections),
             pressure=pressure,
             class_breakdown=class_breakdown,
+            approach_line=approach_line,
+            exit_line=exit_line,
+            stopline_occupied=stopline_occupied,
+            exit_zone_active=exit_zone_active,
+            leading_edge=leading_edge,
         )
 
     def _calculate_pressure(
@@ -188,6 +215,31 @@ class VehicleQueueAnalyzer:
             normalized_sum += normalized_distance
 
         return len(detections) + normalized_sum
+
+    def _calculate_thresholds(
+        self, frame_shape: Tuple[int, int, int], detections: Sequence[VehicleDetection]
+    ) -> Tuple[int, int, bool, bool, Optional[int]]:
+        """Compute threshold positions and occupancy flags for the lane."""
+
+        dimension = frame_shape[0] if self.orientation == "vertical" else frame_shape[1]
+        if dimension <= 0:
+            dimension = 1
+
+        approach_line = int(round(dimension * self._approach_threshold_ratio))
+        approach_line = max(0, min(dimension - 1, approach_line))
+
+        exit_line = max(0, dimension - 1 - self._exit_margin)
+
+        if self.orientation == "vertical":
+            edges = [det.bottom_edge for det in detections]
+        else:
+            edges = [det.right_edge for det in detections]
+
+        leading_edge = edges[0] if edges else None
+        stopline_occupied = any(edge >= approach_line for edge in edges)
+        exit_zone_active = any(edge >= exit_line for edge in edges)
+
+        return approach_line, exit_line, stopline_occupied, exit_zone_active, leading_edge
 
 
 class SmartTrafficSystem:
@@ -316,6 +368,35 @@ class SmartTrafficSystem:
 
         return frame
 
+    def draw_threshold_lines(
+        self,
+        frame: np.ndarray,
+        metrics: QueueMetrics,
+        analyzer: VehicleQueueAnalyzer,
+    ) -> np.ndarray:
+        """Draw threshold lines that determine switching triggers."""
+
+        h, w = frame.shape[:2]
+
+        if analyzer.orientation == "vertical":
+            approach_start = (0, metrics.approach_line)
+            approach_end = (w - 1, metrics.approach_line)
+            exit_start = (0, metrics.exit_line)
+            exit_end = (w - 1, metrics.exit_line)
+        else:
+            approach_start = (metrics.approach_line, 0)
+            approach_end = (metrics.approach_line, h - 1)
+            exit_start = (metrics.exit_line, 0)
+            exit_end = (metrics.exit_line, h - 1)
+
+        approach_color = (0, 215, 255) if metrics.stopline_occupied else (128, 128, 128)
+        exit_color = (0, 255, 0) if metrics.exit_zone_active else (80, 80, 80)
+
+        cv2.line(frame, approach_start, approach_end, approach_color, 2)
+        cv2.line(frame, exit_start, exit_end, exit_color, 2)
+
+        return frame
+
     def draw_queue_summary(
         self, frame: np.ndarray, metrics: QueueMetrics, signal: str, anchor: Tuple[int, int]
     ) -> np.ndarray:
@@ -332,6 +413,7 @@ class SmartTrafficSystem:
             f"Vehicles: {metrics.count}",
             f"Queue pressure: {metrics.pressure:.2f}",
             dominant_text,
+            f"Stopline: {'occupied' if metrics.stopline_occupied else 'clear'}",
         ]
 
         for idx, text in enumerate(info_lines):
@@ -353,6 +435,7 @@ class SmartTrafficSystem:
         detections = self.detector.detect_vehicles(frame)
         metrics = analyzer.calculate_metrics(frame.shape, detections)
         annotated_frame = self.draw_vehicle_annotations(frame, metrics)
+        annotated_frame = self.draw_threshold_lines(annotated_frame, metrics, analyzer)
         return metrics, annotated_frame
 
     def run(self):
@@ -403,6 +486,10 @@ class SmartTrafficSystem:
                     metrics2.count,
                     road1_queue_pressure=metrics1.pressure,
                     road2_queue_pressure=metrics2.pressure,
+                    road1_stopline_occupied=metrics1.stopline_occupied,
+                    road2_stopline_occupied=metrics2.stopline_occupied,
+                    road1_exit_ready=metrics1.exit_zone_active or metrics1.count == 0,
+                    road2_exit_ready=metrics2.exit_zone_active or metrics2.count == 0,
                 )
 
                 # Draw traffic lights and queue summaries

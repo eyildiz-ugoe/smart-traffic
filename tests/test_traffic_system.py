@@ -91,7 +91,7 @@ def test_scenario_requires_balanced_lengths():
 def test_queue_analyzer_ranks_vertical_detections_by_distance():
     analyzer = VehicleQueueAnalyzer(orientation="vertical")
     detections = [
-        VehicleDetection((10, 250, 40, 60), confidence=0.75, class_id=2),  # bottom = 310
+        VehicleDetection((10, 260, 40, 80), confidence=0.75, class_id=2),  # bottom = 340
         VehicleDetection((30, 150, 35, 40), confidence=0.90, class_id=2),  # bottom = 190
         VehicleDetection((50, 200, 30, 80), confidence=0.80, class_id=2),  # bottom = 280
     ]
@@ -100,12 +100,15 @@ def test_queue_analyzer_ranks_vertical_detections_by_distance():
 
     assert metrics.count == 3
     assert [det.bbox for det in metrics.sorted_detections] == [
-        (10, 250, 40, 60),
+        (10, 260, 40, 80),
         (50, 200, 30, 80),
         (30, 150, 35, 40),
     ]
     assert metrics.class_breakdown == {2: 3}
     assert metrics.pressure > metrics.count  # distance weighting applied
+    assert metrics.stopline_occupied is True
+    assert metrics.exit_zone_active is False
+    assert metrics.leading_edge == 340
 
 
 def test_queue_analyzer_horizontal_orientation():
@@ -124,6 +127,106 @@ def test_queue_analyzer_horizontal_orientation():
         (50, 70, 20, 20),
     ]
     assert metrics.class_breakdown == {2: 3}
+    assert not metrics.stopline_occupied
+    assert not metrics.exit_zone_active
+
+
+def test_queue_analyzer_reports_threshold_lines():
+    analyzer = VehicleQueueAnalyzer(orientation="vertical", approach_threshold_ratio=0.5, exit_margin=10)
+    detections = [
+        VehicleDetection((0, 200, 20, 50), confidence=0.8, class_id=2),  # bottom = 250
+    ]
+
+    metrics = analyzer.calculate_metrics((400, 640, 3), detections)
+
+    assert metrics.approach_line == 200
+    assert metrics.exit_line == 389
+    assert metrics.stopline_occupied
+    assert not metrics.exit_zone_active
+
+    # detection reaching exit zone
+    detections.append(VehicleDetection((0, 360, 20, 40), confidence=0.7, class_id=2))
+    metrics = analyzer.calculate_metrics((400, 640, 3), detections)
+    assert metrics.exit_zone_active
+
+
+def test_controller_threshold_priority_and_switching():
+    clock = FakeClock()
+    controller = TrafficLightController(time_func=clock)
+
+    status = controller.update_signal_timing(
+        road1_vehicles=1,
+        road2_vehicles=0,
+        road1_queue_pressure=2.0,
+        road2_queue_pressure=0.0,
+        road1_stopline_occupied=True,
+        road2_stopline_occupied=False,
+        road1_exit_ready=False,
+        road2_exit_ready=True,
+    )
+
+    assert status["road1"] == "GREEN"
+    assert status["road2"] == "RED"
+
+    # Road2 requests but road1 has priority and is not yet clear
+    status = controller.update_signal_timing(
+        road1_vehicles=1,
+        road2_vehicles=1,
+        road1_queue_pressure=3.0,
+        road2_queue_pressure=3.0,
+        road1_stopline_occupied=True,
+        road2_stopline_occupied=True,
+        road1_exit_ready=False,
+        road2_exit_ready=False,
+    )
+
+    assert status["road1"] == "GREEN"
+    assert controller.current_state == controller.STATE_ROAD1_GREEN
+
+    # Once road1 clears and road2 still requests, switch to road2
+    status = controller.update_signal_timing(
+        road1_vehicles=0,
+        road2_vehicles=1,
+        road1_queue_pressure=0.0,
+        road2_queue_pressure=3.0,
+        road1_stopline_occupied=False,
+        road2_stopline_occupied=True,
+        road1_exit_ready=True,
+        road2_exit_ready=False,
+    )
+
+    assert controller.current_state == controller.STATE_ROAD2_GREEN
+    assert status["road2"] == "GREEN"
+
+    # Road1 requests while road2 is active; road1 has priority but must wait until road2 clears
+    status = controller.update_signal_timing(
+        road1_vehicles=1,
+        road2_vehicles=1,
+        road1_queue_pressure=3.5,
+        road2_queue_pressure=3.5,
+        road1_stopline_occupied=True,
+        road2_stopline_occupied=True,
+        road1_exit_ready=False,
+        road2_exit_ready=False,
+    )
+
+    assert controller.current_state == controller.STATE_ROAD2_GREEN
+    assert status["road2"] == "GREEN"
+
+    # After road2 clears, priority should give road1 the green light
+    status = controller.update_signal_timing(
+        road1_vehicles=1,
+        road2_vehicles=0,
+        road1_queue_pressure=3.5,
+        road2_queue_pressure=0.0,
+        road1_stopline_occupied=True,
+        road2_stopline_occupied=False,
+        road1_exit_ready=False,
+        road2_exit_ready=True,
+    )
+
+    assert controller.current_state == controller.STATE_ROAD1_GREEN
+    assert status["road1"] == "GREEN"
 
 
 def test_queue_pressure_extends_green_time():
