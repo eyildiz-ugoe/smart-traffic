@@ -10,39 +10,9 @@ Date: October 2025
 
 import cv2
 import numpy as np
-from collections import deque
-from dataclasses import dataclass
-from typing import Tuple, List, Dict
-import time
-from pathlib import Path
+from typing import Tuple, List
 
-
-@dataclass
-class TrafficStats:
-    """Data class to store traffic statistics for a road."""
-    vehicle_count: int = 0
-    avg_vehicles_per_frame: float = 0.0
-    congestion_level: str = "LOW"
-    total_frames: int = 0
-    
-    def update(self, current_count: int):
-        """Update statistics with new vehicle count."""
-        self.total_frames += 1
-        self.vehicle_count = current_count
-        # Calculate moving average
-        self.avg_vehicles_per_frame = (
-            (self.avg_vehicles_per_frame * (self.total_frames - 1) + current_count) 
-            / self.total_frames
-        )
-        # Determine congestion level
-        if current_count == 0:
-            self.congestion_level = "CLEAR"
-        elif current_count < 3:
-            self.congestion_level = "LOW"
-        elif current_count < 7:
-            self.congestion_level = "MEDIUM"
-        else:
-            self.congestion_level = "HIGH"
+from traffic_core import TrafficLightController, TrafficStats
 
 
 class VehicleDetector:
@@ -89,9 +59,9 @@ class VehicleDetector:
         
         # Find contours
         contours, _ = cv2.findContours(
-            fg_mask, 
-            cv2.RETR_EXTERNAL, 
-            cv2.APPR OX_SIMPLE
+            fg_mask,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE
         )
         
         # Filter contours and get bounding boxes
@@ -103,110 +73,6 @@ class VehicleDetector:
                 vehicles.append((x, y, w, h))
         
         return len(vehicles), vehicles
-
-
-class TrafficLightController:
-    """
-    Controls traffic light timing based on vehicle density on two roads.
-    """
-    
-    # Traffic light states
-    STATE_ROAD1_GREEN = 0
-    STATE_ROAD2_GREEN = 1
-    
-    # Signal timing constants (in seconds)
-    MIN_GREEN_TIME = 5
-    MAX_GREEN_TIME = 30
-    YELLOW_TIME = 3
-    RED_TIME = 2
-    
-    def __init__(self):
-        """Initialize the traffic light controller."""
-        self.current_state = self.STATE_ROAD1_GREEN
-        self.state_start_time = time.time()
-        self.green_time_road1 = self.MIN_GREEN_TIME
-        self.green_time_road2 = self.MIN_GREEN_TIME
-        
-    def calculate_green_time(self, vehicle_count: int) -> int:
-        """
-        Calculate optimal green light duration based on vehicle count.
-        
-        Args:
-            vehicle_count: Number of vehicles detected
-            
-        Returns:
-            Green light duration in seconds
-        """
-        if vehicle_count == 0:
-            return self.MIN_GREEN_TIME
-        elif vehicle_count < 3:
-            return 10
-        elif vehicle_count < 7:
-            return 20
-        else:
-            return self.MAX_GREEN_TIME
-    
-    def update_signal_timing(self, road1_vehicles: int, road2_vehicles: int) -> Dict:
-        """
-        Update traffic signal timing based on current vehicle counts.
-        
-        Args:
-            road1_vehicles: Number of vehicles on road 1
-            road2_vehicles: Number of vehicles on road 2
-            
-        Returns:
-            Dictionary with signal status for both roads
-        """
-        current_time = time.time()
-        elapsed_time = current_time - self.state_start_time
-        
-        # Calculate green times for both roads
-        self.green_time_road1 = self.calculate_green_time(road1_vehicles)
-        self.green_time_road2 = self.calculate_green_time(road2_vehicles)
-        
-        # State machine for traffic light control
-        signal_status = {
-            'road1': 'RED',
-            'road2': 'RED',
-            'time_remaining': 0,
-            'next_switch': False
-        }
-        
-        if self.current_state == self.STATE_ROAD1_GREEN:
-            if elapsed_time < self.green_time_road1:
-                signal_status['road1'] = 'GREEN'
-                signal_status['road2'] = 'RED'
-                signal_status['time_remaining'] = self.green_time_road1 - elapsed_time
-            elif elapsed_time < self.green_time_road1 + self.YELLOW_TIME:
-                signal_status['road1'] = 'YELLOW'
-                signal_status['road2'] = 'RED'
-                signal_status['time_remaining'] = self.green_time_road1 + self.YELLOW_TIME - elapsed_time
-            else:
-                # Switch to road 2
-                signal_status['next_switch'] = True
-                self.current_state = self.STATE_ROAD2_GREEN
-                self.state_start_time = current_time
-                signal_status['road1'] = 'RED'
-                signal_status['road2'] = 'GREEN'
-                
-        else:  # STATE_ROAD2_GREEN
-            if elapsed_time < self.green_time_road2:
-                signal_status['road1'] = 'RED'
-                signal_status['road2'] = 'GREEN'
-                signal_status['time_remaining'] = self.green_time_road2 - elapsed_time
-            elif elapsed_time < self.green_time_road2 + self.YELLOW_TIME:
-                signal_status['road1'] = 'RED'
-                signal_status['road2'] = 'YELLOW'
-                signal_status['time_remaining'] = self.green_time_road2 + self.YELLOW_TIME - elapsed_time
-            else:
-                # Switch to road 1
-                signal_status['next_switch'] = True
-                self.current_state = self.STATE_ROAD1_GREEN
-                self.state_start_time = current_time
-                signal_status['road1'] = 'GREEN'
-                signal_status['road2'] = 'RED'
-        
-        return signal_status
 
 
 class SmartTrafficSystem:
