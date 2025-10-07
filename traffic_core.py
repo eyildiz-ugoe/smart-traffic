@@ -1,7 +1,7 @@
 """Core logic shared between the simulation and unit tests."""
 
 from dataclasses import dataclass
-from typing import Callable, Dict
+from typing import Callable, Dict, Optional
 import time
 
 
@@ -52,27 +52,66 @@ class TrafficLightController:
         self.green_time_road1 = self.MIN_GREEN_TIME
         self.green_time_road2 = self.MIN_GREEN_TIME
 
-    def calculate_green_time(self, vehicle_count: int) -> int:
-        if vehicle_count == 0:
-            return self.MIN_GREEN_TIME
-        if vehicle_count < 3:
-            return 10
-        if vehicle_count < 7:
-            return 20
-        return self.MAX_GREEN_TIME
+    def calculate_green_time(
+        self, vehicle_count: int, queue_pressure: Optional[float] = None
+    ) -> int:
+        """Return a green phase duration that reacts to demand and queue pressure."""
 
-    def update_signal_timing(self, road1_vehicles: int, road2_vehicles: int) -> Dict[str, object]:
+        if vehicle_count == 0:
+            base_time = self.MIN_GREEN_TIME
+        elif vehicle_count < 3:
+            base_time = 10
+        elif vehicle_count < 7:
+            base_time = 20
+        else:
+            base_time = self.MAX_GREEN_TIME
+
+        if queue_pressure is None or base_time >= self.MAX_GREEN_TIME:
+            return base_time
+
+        dynamic_bonus = max(0.0, queue_pressure - float(vehicle_count))
+        if dynamic_bonus <= 0:
+            return base_time
+
+        bonus_seconds = min(
+            self.MAX_GREEN_TIME - base_time,
+            int(round(min(dynamic_bonus, 5.0) * 2)),
+        )
+        return base_time + bonus_seconds
+
+    def update_signal_timing(
+        self,
+        road1_vehicles: int,
+        road2_vehicles: int,
+        road1_queue_pressure: Optional[float] = None,
+        road2_queue_pressure: Optional[float] = None,
+    ) -> Dict[str, object]:
         current_time = self._time_func()
         elapsed_time = current_time - self.state_start_time
 
-        self.green_time_road1 = self.calculate_green_time(road1_vehicles)
-        self.green_time_road2 = self.calculate_green_time(road2_vehicles)
+        self.green_time_road1 = self.calculate_green_time(
+            road1_vehicles, queue_pressure=road1_queue_pressure
+        )
+        self.green_time_road2 = self.calculate_green_time(
+            road2_vehicles, queue_pressure=road2_queue_pressure
+        )
 
         signal_status: Dict[str, object] = {
             "road1": "RED",
             "road2": "RED",
             "time_remaining": 0.0,
             "next_switch": False,
+            "active_road": "road1"
+            if self.current_state == self.STATE_ROAD1_GREEN
+            else "road2",
+            "green_durations": {
+                "road1": self.green_time_road1,
+                "road2": self.green_time_road2,
+            },
+            "queue_pressure": {
+                "road1": road1_queue_pressure,
+                "road2": road2_queue_pressure,
+            },
         }
 
         if self.current_state == self.STATE_ROAD1_GREEN:
@@ -92,6 +131,7 @@ class TrafficLightController:
                 self.state_start_time = current_time
                 signal_status["road1"] = "RED"
                 signal_status["road2"] = "GREEN"
+                signal_status["active_road"] = "road2"
                 signal_status["time_remaining"] = self.green_time_road2
         else:
             if elapsed_time < self.green_time_road2:
@@ -110,6 +150,7 @@ class TrafficLightController:
                 self.state_start_time = current_time
                 signal_status["road1"] = "GREEN"
                 signal_status["road2"] = "RED"
+                signal_status["active_road"] = "road1"
                 signal_status["time_remaining"] = self.green_time_road1
 
         return signal_status
