@@ -44,6 +44,8 @@ class TrafficLightController:
     MAX_GREEN_TIME = 30
     YELLOW_TIME = 3
     RED_TIME = 2
+    PRESSURE_BONUS_CAP = 5.0
+    PRESSURE_BONUS_MULTIPLIER = 2
 
     def __init__(self, time_func: Callable[[], float] | None = None) -> None:
         self._time_func = time_func or time.time
@@ -75,7 +77,12 @@ class TrafficLightController:
 
         bonus_seconds = min(
             self.MAX_GREEN_TIME - base_time,
-            int(round(min(dynamic_bonus, 5.0) * 2)),
+            int(
+                round(
+                    min(dynamic_bonus, self.PRESSURE_BONUS_CAP)
+                    * self.PRESSURE_BONUS_MULTIPLIER
+                )
+            ),
         )
         return base_time + bonus_seconds
 

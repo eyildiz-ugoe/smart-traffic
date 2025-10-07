@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
+from subprocess import CalledProcessError
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 try:
@@ -26,6 +28,9 @@ from counter import VehicleCounter
 from sorter import VehicleSorter
 from traffic_core import TrafficLightController, TrafficStats
 from video_downloader import TrafficVideoSetup
+
+
+logger = logging.getLogger(__name__)
 
 try:  # pragma: no cover - exercised at runtime when YOLO is used
     from ultralytics import YOLO
@@ -162,6 +167,13 @@ class VehicleQueueAnalyzer:
     def _calculate_pressure(
         self, frame_shape: Tuple[int, int, int], detections: Sequence[VehicleDetection]
     ) -> float:
+        """Compute a queue pressure score that weights vehicles by distance.
+
+        The score combines the raw vehicle count with a normalized distance term so
+        that vehicles farther from the stop line contribute more pressure. This
+        reflects that longer queues should influence the controller to extend the
+        green phase.
+        """
         if not detections:
             return 0.0
 
@@ -507,7 +519,10 @@ def resolve_video_sources(
 
     try:
         setup_helper = setup_factory(fallback_dir)
-    except Exception:
+    except (OSError, RuntimeError, ValueError, CalledProcessError) as exc:
+        logger.warning(
+            "Failed to initialize TrafficVideoSetup in %s: %s", fallback_dir, exc
+        )
         setup_helper = None
 
     if setup_helper is not None:
@@ -516,16 +531,16 @@ def resolve_video_sources(
                 existing = _existing_pair()
                 if existing is not None:
                     return existing
-        except Exception:
-            pass
+        except (OSError, RuntimeError, ValueError, CalledProcessError) as exc:
+            logger.warning("Error verifying traffic video setup: %s", exc)
 
         try:
             if setup_helper.create_test_videos():
                 existing = _existing_pair()
                 if existing is not None:
                     return existing
-        except Exception:
-            pass
+        except (OSError, RuntimeError, ValueError, CalledProcessError) as exc:
+            logger.warning("Error creating fallback traffic videos: %s", exc)
 
     return str(fallback_first), str(fallback_second)
 
