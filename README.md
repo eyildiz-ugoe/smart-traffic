@@ -1,15 +1,16 @@
 # Smart Traffic Light Automation
 
 This project simulates a smart two-way intersection that adapts the green light
-allocation based on the detected number of vehicles on each road. The detector
-uses OpenCV background subtraction to approximate vehicle density and feeds that
-information into an adaptive state machine.
+allocation based on the detected number of vehicles on each road. Vehicle
+density is now obtained from a YOLOv8 detector running on real traffic footage
+and the counts feed directly into an adaptive state machine.
 
 ## Features
 
-- Real-time vehicle counting using background subtraction.
+- Real-time vehicle counting backed by the Ultralytics YOLOv8 models.
 - Dynamic green-light duration based on congestion levels.
-- Visual overlays with per-road statistics, signal state, and countdown timer.
+- Minimal visual overlay – only the virtual traffic lights are rendered on top
+  of the original footage.
 - Helper script to download or synthesise traffic clips for experimentation.
 - Curated scenarios that mirror contrasting traffic patterns for reproducible
   tests.
@@ -22,10 +23,18 @@ information into an adaptive state machine.
    python -m pip install -r requirements.txt
    ```
 
-   If you do not have a `requirements.txt` file, install `opencv-python` and
-   `numpy` manually.
+   The Ultralytics package will install PyTorch automatically if it is not yet
+   present. See the [official docs](https://docs.ultralytics.com) for GPU setup
+   tips.
 
-2. **Prepare videos**
+2. **Download YOLO weights**
+
+   The system defaults to the small `yolov8n.pt` model. Place the file in the
+   project root (or provide a custom path when instantiating
+   `SmartTrafficSystem`). Pretrained weights are available from the
+   [Ultralytics model zoo](https://github.com/ultralytics/ultralytics#models).
+
+3. **Prepare videos**
 
    - Recommended royalty-free samples used during development:
      - [Pexels 854100 – heavy arterial traffic](https://www.pexels.com/video/854100/)
@@ -40,7 +49,7 @@ information into an adaptive state machine.
      The helper attempts to download the same clips and will fall back to
      generating synthetic videos if direct downloads are blocked.
 
-3. **Run the simulation**
+4. **Run the simulation**
 
    ```bash
    python smart_traffic_system.py
