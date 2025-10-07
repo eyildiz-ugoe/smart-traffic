@@ -26,11 +26,5 @@ build/
 .DS_Store
 Thumbs.db
 
-# Project specific
-*.mp4
-*.avi
-road1.mp4
-road2.mp4
-
 # Logs
 *.log

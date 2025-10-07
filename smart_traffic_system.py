@@ -248,8 +248,8 @@ def main():
         Replace 'road1.mp4' and 'road2.mp4' with your actual video files.
     """
     # Video file paths (update these with your actual video paths)
-    VIDEO_ROAD1 = "road1.mp4"
-    VIDEO_ROAD2 = "road2.mp4"
+    VIDEO_ROAD1 = "videos/road1.mp4"
+    VIDEO_ROAD2 = "videos/road2.mp4"
     
     try:
         # Initialize and run the system
