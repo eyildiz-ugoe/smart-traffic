@@ -1,7 +1,21 @@
+from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import pytest
 
 from traffic_core import TrafficLightController, TrafficStats
 from traffic_scenarios import TrafficScenario, load_predefined_scenarios
+from smart_traffic_system import (
+    VehicleCounter,
+    VehicleDetection,
+    VehicleQueueAnalyzer,
+    VehicleSorter,
+    resolve_video_sources,
+)
 
 
 class FakeClock:
@@ -72,3 +86,116 @@ def test_scenario_requires_balanced_lengths():
             road1_counts=[1, 2, 3],
             road2_counts=[1, 2],
         )
+
+
+def test_queue_analyzer_ranks_vertical_detections_by_distance():
+    analyzer = VehicleQueueAnalyzer(orientation="vertical")
+    detections = [
+        VehicleDetection((10, 250, 40, 60), confidence=0.75, class_id=2),  # bottom = 310
+        VehicleDetection((30, 150, 35, 40), confidence=0.90, class_id=2),  # bottom = 190
+        VehicleDetection((50, 200, 30, 80), confidence=0.80, class_id=2),  # bottom = 280
+    ]
+
+    metrics = analyzer.calculate_metrics((480, 640, 3), detections)
+
+    assert metrics.count == 3
+    assert [det.bbox for det in metrics.sorted_detections] == [
+        (10, 250, 40, 60),
+        (50, 200, 30, 80),
+        (30, 150, 35, 40),
+    ]
+    assert metrics.class_breakdown == {2: 3}
+    assert metrics.pressure > metrics.count  # distance weighting applied
+
+
+def test_queue_analyzer_horizontal_orientation():
+    analyzer = VehicleQueueAnalyzer(orientation="horizontal")
+    detections = [
+        VehicleDetection((100, 50, 40, 40), confidence=0.60, class_id=2),  # right = 140
+        VehicleDetection((200, 60, 30, 40), confidence=0.70, class_id=2),  # right = 230
+        VehicleDetection((50, 70, 20, 20), confidence=0.90, class_id=2),   # right = 70
+    ]
+
+    metrics = analyzer.calculate_metrics((480, 640, 3), detections)
+
+    assert [det.bbox for det in metrics.sorted_detections] == [
+        (200, 60, 30, 40),
+        (100, 50, 40, 40),
+        (50, 70, 20, 20),
+    ]
+    assert metrics.class_breakdown == {2: 3}
+
+
+def test_queue_pressure_extends_green_time():
+    clock = FakeClock()
+    controller = TrafficLightController(time_func=clock)
+
+    controller.update_signal_timing(
+        road1_vehicles=2,
+        road2_vehicles=2,
+        road1_queue_pressure=6.0,
+        road2_queue_pressure=2.5,
+    )
+
+    assert controller.green_time_road1 > controller.green_time_road2
+
+
+def test_vehicle_counter_tracks_class_breakdown():
+    counter = VehicleCounter()
+    detections = [
+        VehicleDetection((0, 0, 10, 10), confidence=0.9, class_id=2),
+        VehicleDetection((0, 0, 10, 10), confidence=0.8, class_id=2),
+        VehicleDetection((0, 0, 10, 10), confidence=0.7, class_id=5),
+    ]
+
+    frame_total, breakdown = counter.summarize(detections)
+
+    assert frame_total == 3
+    assert breakdown == {2: 2, 5: 1}
+    assert counter.total_detected == 3
+    assert counter.totals_per_class[2] == 2
+
+
+def test_vehicle_sorter_respects_orientation():
+    horizontal = VehicleSorter(orientation="horizontal")
+    detections = [
+        VehicleDetection((0, 0, 10, 10), confidence=0.9, class_id=2),
+        VehicleDetection((20, 0, 10, 10), confidence=0.9, class_id=2),
+        VehicleDetection((15, 0, 10, 10), confidence=0.9, class_id=2),
+    ]
+
+    sorted_detections = horizontal.sort(detections)
+
+    assert [det.bbox for det in sorted_detections] == [
+        (20, 0, 10, 10),
+        (15, 0, 10, 10),
+        (0, 0, 10, 10),
+    ]
+
+
+def test_resolve_video_sources_uses_setup_helper_when_missing(tmp_path):
+    created_dir = {}
+
+    class DummySetup:
+        def __init__(self, output_dir):
+            self.output_dir = Path(output_dir)
+            created_dir["path"] = self.output_dir
+
+        def verify_setup(self) -> bool:
+            return False
+
+        def create_test_videos(self) -> bool:
+            for name in ("road1.mp4", "road2.mp4"):
+                (self.output_dir / name).write_text("stub")
+            return True
+
+    def factory(output_dir):
+        return DummySetup(output_dir)
+
+    candidate_pairs = [(tmp_path / "road1.mp4", tmp_path / "road2.mp4")]
+
+    path1, path2 = resolve_video_sources(candidate_pairs=candidate_pairs, setup_factory=factory)
+
+    assert Path(path1).exists()
+    assert Path(path2).exists()
+    assert created_dir["path"] == tmp_path

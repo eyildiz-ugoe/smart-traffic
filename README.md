@@ -8,9 +8,11 @@ and the counts feed directly into an adaptive state machine.
 ## Features
 
 - Real-time vehicle counting backed by the Ultralytics YOLOv8 models.
-- Dynamic green-light duration based on congestion levels.
-- Minimal visual overlay – only the virtual traffic lights are rendered on top
-  of the original footage.
+- Queue-aware ranking that sorts vehicles by proximity to the stop line so the
+  busiest approach keeps the green light longer.
+- Dynamic green-light duration based on congestion levels and queue pressure.
+- Rich visual overlay with lane queues, signal state, and live statistics for
+  each video feed.
 - Helper script to download or synthesise traffic clips for experimentation.
 - Curated scenarios that mirror contrasting traffic patterns for reproducible
   tests.
@@ -29,9 +31,10 @@ and the counts feed directly into an adaptive state machine.
 
 2. **Download YOLO weights**
 
-   The system defaults to the small `yolov8n.pt` model. Place the file in the
-   project root (or provide a custom path when instantiating
-   `SmartTrafficSystem`). Pretrained weights are available from the
+   The system now defaults to the flagship `yolov8x.pt` model for improved
+   detection accuracy on complex intersections. Place the file in the project
+   root (or provide a custom path when instantiating `SmartTrafficSystem`).
+   Pretrained weights are available from the
    [Ultralytics model zoo](https://github.com/ultralytics/ultralytics#models).
 
 3. **Prepare videos**
@@ -39,7 +42,9 @@ and the counts feed directly into an adaptive state machine.
    - Recommended royalty-free samples used during development:
      - [Pexels 854100 – heavy arterial traffic](https://www.pexels.com/video/854100/)
      - [Pexels 3044127 – lighter opposing traffic](https://www.pexels.com/video/3044127/)
-   - Save them in the project root as `road1.mp4` and `road2.mp4`.
+   - Save them under `videos/road1.mp4` and `videos/road2.mp4` (the
+     application falls back to files in the project root if the directory is
+     missing and can auto-generate placeholders if neither location exists).
    - Alternatively run the setup helper:
 
      ```bash
@@ -47,7 +52,9 @@ and the counts feed directly into an adaptive state machine.
      ```
 
      The helper attempts to download the same clips and will fall back to
-     generating synthetic videos if direct downloads are blocked.
+     generating synthetic videos if direct downloads are blocked. The main
+     application now invokes the same generator automatically when no footage
+     is found so you always have something to test against.
 
 4. **Run the simulation**
 
