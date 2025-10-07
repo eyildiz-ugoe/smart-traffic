@@ -49,7 +49,7 @@ class DetectorConfig:
     confidence: float = 0.25
     iou: float = 0.5
     classes: Iterable[int] | None = None
-    device: str | None = None
+    device: str | None = "cuda"  # Use GPU by default (falls back to CPU if unavailable)
     max_detections: Optional[int] = 100
 
 
