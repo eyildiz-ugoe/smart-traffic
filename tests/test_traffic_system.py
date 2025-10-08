@@ -229,6 +229,62 @@ def test_controller_threshold_priority_and_switching():
     assert status["road1"] == "GREEN"
 
 
+def test_controller_holds_secondary_road_until_main_is_clear():
+    clock = FakeClock()
+    controller = TrafficLightController(time_func=clock)
+
+    status = controller.update_signal_timing(
+        road1_vehicles=1,
+        road2_vehicles=0,
+        road1_queue_pressure=2.5,
+        road2_queue_pressure=0.0,
+        road1_stopline_occupied=False,
+        road2_stopline_occupied=False,
+        road1_exit_ready=False,
+        road2_exit_ready=True,
+        road1_leading_edge=180,
+        road1_approach_line=200,
+    )
+
+    assert controller.current_state == controller.STATE_ROAD1_GREEN
+    assert status["road1"] == "GREEN"
+    assert status["road2"] == "RED"
+
+    status = controller.update_signal_timing(
+        road1_vehicles=1,
+        road2_vehicles=1,
+        road1_queue_pressure=3.0,
+        road2_queue_pressure=3.2,
+        road1_stopline_occupied=False,
+        road2_stopline_occupied=True,
+        road1_exit_ready=False,
+        road2_exit_ready=False,
+        road1_leading_edge=195,
+        road1_approach_line=200,
+    )
+
+    assert controller.current_state == controller.STATE_ROAD1_GREEN
+    assert status["road1"] == "GREEN"
+    assert status["road2"] == "RED"
+
+    status = controller.update_signal_timing(
+        road1_vehicles=0,
+        road2_vehicles=1,
+        road1_queue_pressure=0.0,
+        road2_queue_pressure=3.2,
+        road1_stopline_occupied=False,
+        road2_stopline_occupied=True,
+        road1_exit_ready=True,
+        road2_exit_ready=False,
+        road1_leading_edge=None,
+        road1_approach_line=200,
+    )
+
+    assert controller.current_state == controller.STATE_ROAD2_GREEN
+    assert status["road1"] == "RED"
+    assert status["road2"] == "GREEN"
+
+
 def test_queue_pressure_extends_green_time():
     clock = FakeClock()
     controller = TrafficLightController(time_func=clock)
