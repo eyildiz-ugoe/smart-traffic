@@ -289,7 +289,10 @@ class SmartTrafficSystem:
         self.detector = VehicleDetector(detector_config)
 
         # Queuing heuristics per road (support cameras pointing in different directions)
-        self.queue_analyzer_road1 = VehicleQueueAnalyzer(orientation=orientation_road1)
+        self.queue_analyzer_road1 = VehicleQueueAnalyzer(
+            orientation=orientation_road1,
+            approach_threshold_ratio=0.55,
+        )
         self.queue_analyzer_road2 = VehicleQueueAnalyzer(orientation=orientation_road2)
 
         # Initialize traffic light controller
@@ -442,12 +445,8 @@ class SmartTrafficSystem:
         """
         Main loop to run the smart traffic system.
         """
-        print("=" * 60)
-        print("Smart Traffic Light Automation System")
-        print("=" * 60)
-        print("Press 'q' to quit")
-        print("=" * 60)
-        
+        logger.info("Smart Traffic Light Automation System initialised. Press 'q' to quit.")
+
         frame_count = 0
         
         try:
@@ -458,7 +457,7 @@ class SmartTrafficSystem:
                 
                 # Check if we've reached the end of either video
                 if not ret1 or not ret2:
-                    print("\nEnd of video reached. Restarting...")
+                    logger.info("End of video reached. Restarting playback from the beginning.")
                     self.cap_road1.set(cv2.CAP_PROP_POS_FRAMES, 0)
                     self.cap_road2.set(cv2.CAP_PROP_POS_FRAMES, 0)
                     self.queue_analyzer_road1.counter.reset()
@@ -490,6 +489,10 @@ class SmartTrafficSystem:
                     road2_stopline_occupied=metrics2.stopline_occupied,
                     road1_exit_ready=metrics1.exit_zone_active or metrics1.count == 0,
                     road2_exit_ready=metrics2.exit_zone_active or metrics2.count == 0,
+                    road1_leading_edge=metrics1.leading_edge,
+                    road2_leading_edge=metrics2.leading_edge,
+                    road1_approach_line=metrics1.approach_line,
+                    road2_approach_line=metrics2.approach_line,
                 )
 
                 # Draw traffic lights and queue summaries
@@ -517,20 +520,17 @@ class SmartTrafficSystem:
 
                 # Print statistics every 30 frames
                 if frame_count % 30 == 0:
-                    print(f"\nFrame: {frame_count}")
-                    print(
-                        "Road 1: "
-                        f"{metrics1.count} vehicles | "
-                        f"pressure={metrics1.pressure:.2f} | "
-                        f"{self.stats_road1.congestion_level} | "
-                        f"signal={signal_status['road1']}"
-                    )
-                    print(
-                        "Road 2: "
-                        f"{metrics2.count} vehicles | "
-                        f"pressure={metrics2.pressure:.2f} | "
-                        f"{self.stats_road2.congestion_level} | "
-                        f"signal={signal_status['road2']}"
+                    logger.debug(
+                        "Frame %d | Road1: vehicles=%d pressure=%.2f congestion=%s signal=%s | Road2: vehicles=%d pressure=%.2f congestion=%s signal=%s",
+                        frame_count,
+                        metrics1.count,
+                        metrics1.pressure,
+                        self.stats_road1.congestion_level,
+                        signal_status["road1"],
+                        metrics2.count,
+                        metrics2.pressure,
+                        self.stats_road2.congestion_level,
+                        signal_status["road2"],
                     )
                 
                 frame_count += 1
@@ -539,8 +539,8 @@ class SmartTrafficSystem:
                 if cv2.waitKey(30) & 0xFF == ord('q'):
                     break
                     
-        except Exception as e:
-            print(f"\nError occurred: {e}")
+        except Exception:
+            logger.exception("Error occurred during smart traffic system execution.")
             raise
         finally:
             # Cleanup
@@ -549,22 +549,23 @@ class SmartTrafficSystem:
             cv2.destroyAllWindows()
             
             # Print final statistics
-            print("\n" + "=" * 60)
-            print("FINAL STATISTICS")
-            print("=" * 60)
-            print(f"Road 1: Avg vehicles = {self.stats_road1.avg_vehicles_per_frame:.2f}")
-            print(f"Road 2: Avg vehicles = {self.stats_road2.avg_vehicles_per_frame:.2f}")
+            logger.info(
+                "Run complete. Avg vehicles per frame -> Road1: %.2f, Road2: %.2f",
+                self.stats_road1.avg_vehicles_per_frame,
+                self.stats_road2.avg_vehicles_per_frame,
+            )
             if self.last_metrics_road1 is not None:
-                print(
-                    f"Road 1 last pressure = {self.last_metrics_road1.pressure:.2f} | "
-                    f"vehicles = {self.last_metrics_road1.count}"
+                logger.debug(
+                    "Final Road1 metrics: pressure=%.2f vehicles=%d",
+                    self.last_metrics_road1.pressure,
+                    self.last_metrics_road1.count,
                 )
             if self.last_metrics_road2 is not None:
-                print(
-                    f"Road 2 last pressure = {self.last_metrics_road2.pressure:.2f} | "
-                    f"vehicles = {self.last_metrics_road2.count}"
+                logger.debug(
+                    "Final Road2 metrics: pressure=%.2f vehicles=%d",
+                    self.last_metrics_road2.pressure,
+                    self.last_metrics_road2.count,
                 )
-            print("=" * 60)
 
 
 SetupFactory = Callable[[Path], TrafficVideoSetup]
@@ -648,20 +649,16 @@ def main():
         system.run()
         
     except FileNotFoundError as e:
-        print(f"Error: Video file not found - {e}")
-        print("\nPlease ensure you have two video files:")
-        print("  - videos/road1.mp4 or road1.mp4: Video of traffic on road 1")
-        print("  - videos/road2.mp4 or road2.mp4: Video of traffic on road 2")
-        print(
-            "The application automatically looks inside the 'videos/' directory "
-            "before falling back to the project root."
+        logger.error("Video file not found: %s", e)
+        logger.error(
+            "Please ensure both road1.mp4 and road2.mp4 are available either in the 'videos/' directory or project root."
         )
     except ImportError as e:
-        print("Error: Missing dependency -", e)
-        print("\nInstall the Ultralytics package with:\n  pip install ultralytics")
-        print("Ensure the YOLOv8 weights (e.g., yolov8n.pt) are available locally.")
+        logger.error("Missing dependency: %s", e)
+        logger.error("Install the Ultralytics package with: pip install ultralytics")
+        logger.error("Ensure YOLOv8 weights (e.g., yolov8n.pt) are available locally.")
     except Exception as e:
-        print(f"Error: {e}")
+        logger.exception("Unhandled error in smart traffic system: %s", e)
 
 
 if __name__ == "__main__":
