@@ -7,9 +7,17 @@ if str(ROOT) not in sys.path:
 
 import pytest
 
+try:  # pragma: no cover - optional test dependency
+    import cv2
+    import numpy as np
+except ImportError:  # pragma: no cover - gracefully handle headless environments
+    cv2 = None
+    np = None
+
 from traffic_core import TrafficLightController, TrafficStats
 from traffic_scenarios import TrafficScenario, load_predefined_scenarios
 from smart_traffic_system import (
+    SimulationTrafficSystem,
     VehicleCounter,
     VehicleDetection,
     VehicleQueueAnalyzer,
@@ -358,3 +366,16 @@ def test_resolve_video_sources_uses_setup_helper_when_missing(tmp_path):
     assert Path(path1).exists()
     assert Path(path2).exists()
     assert created_dir["path"] == tmp_path
+
+
+@pytest.mark.skipif(cv2 is None or np is None, reason="simulation requires cv2 and numpy")
+def test_simulation_mode_generates_metrics_without_display():
+    simulation = SimulationTrafficSystem(fps=20, seed=42)
+    simulation.run(max_frames=60, display_window=False)
+
+    assert simulation.stats_road1.total_frames == 60
+    assert simulation.stats_road2.total_frames == 60
+    assert simulation.last_metrics_road1 is not None
+    assert simulation.last_metrics_road2 is not None
+    assert simulation.stats_road1.avg_vehicles_per_frame >= 0.0
+    assert simulation.stats_road2.avg_vehicles_per_frame >= 0.0
