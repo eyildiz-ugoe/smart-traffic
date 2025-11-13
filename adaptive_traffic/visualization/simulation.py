@@ -105,7 +105,7 @@ class SimulationVisualization(VisualizationStrategy):
             pygame.draw.rect(self.surface, COLOR_VEHICLE_B, rect)
 
     def _draw_stats(self, context: Dict[str, object]) -> None:
-        font = pygame.font.SysFont("Consolas", 18)
+        font = pygame.font.Font(None, 18)
         counts = context.get("counts", {"A": 0, "B": 0})
         waits = context.get("waits", {"A": 0.0, "B": 0.0})
         text_lines = [
