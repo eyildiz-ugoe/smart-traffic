@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import time
-from typing import Callable, Dict, Tuple
+from typing import Callable, Dict, Tuple, Literal
 
-LightState = str
+LightState = Literal["green", "yellow", "red"]
 
 
 @dataclass(slots=True)
