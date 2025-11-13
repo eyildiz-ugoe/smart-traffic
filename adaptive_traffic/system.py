@@ -42,16 +42,18 @@ class RealisticModeStrategy(ModeStrategy):
         config.ensure_paths()
         if config.video_path_road_a is None or config.video_path_road_b is None:
             raise ValueError("Realistic mode requires both video paths to be provided")
+        assert config.video_path_road_a is not None
         self.counter_a = CameraCounter(
             CameraCounterConfig(
-                video_path=config.video_path_road_a,  # type: ignore[arg-type]
+                video_path=config.video_path_road_a,
                 detection_zone_size=config.detection_zone_size,
                 confidence=config.detection_confidence,
             )
         )
+        assert config.video_path_road_b is not None
         self.counter_b = CameraCounter(
             CameraCounterConfig(
-                video_path=config.video_path_road_b,  # type: ignore[arg-type]
+                video_path=config.video_path_road_b,
                 detection_zone_size=config.detection_zone_size,
                 confidence=config.detection_confidence,
             )
