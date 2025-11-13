@@ -139,6 +139,17 @@ class TrafficLightController:
             road2_vehicles, queue_pressure=road2_queue_pressure
         )
 
+        # Smart early switching: if current road is empty and other has traffic, switch early
+        early_switch = False
+        if self.current_state == self.STATE_ROAD1_GREEN:
+            # Road 1 is green, check if it's empty and road 2 has traffic
+            if road1_vehicles == 0 and road2_vehicles > 0 and elapsed_time >= self.MIN_GREEN_TIME:
+                early_switch = True
+        else:
+            # Road 2 is green, check if it's empty and road 1 has traffic
+            if road2_vehicles == 0 and road1_vehicles > 0 and elapsed_time >= self.MIN_GREEN_TIME:
+                early_switch = True
+
         signal_status: Dict[str, object] = {
             "road1": "RED",
             "road2": "RED",
@@ -155,10 +166,25 @@ class TrafficLightController:
                 "road1": road1_queue_pressure,
                 "road2": road2_queue_pressure,
             },
+            "early_switch_triggered": early_switch,
         }
 
         if self.current_state == self.STATE_ROAD1_GREEN:
-            if elapsed_time < self.green_time_road1:
+            # Trigger early switch if road is empty
+            if early_switch:
+                signal_status["road1"] = "YELLOW"
+                signal_status["road2"] = "RED"
+                signal_status["time_remaining"] = self.YELLOW_TIME
+                signal_status["next_switch"] = True
+                # Force yellow transition
+                if elapsed_time >= self.MIN_GREEN_TIME + self.YELLOW_TIME:
+                    self.current_state = self.STATE_ROAD2_GREEN
+                    self.state_start_time = current_time
+                    signal_status["road1"] = "RED"
+                    signal_status["road2"] = "GREEN"
+                    signal_status["active_road"] = "road2"
+                    signal_status["time_remaining"] = self.green_time_road2
+            elif elapsed_time < self.green_time_road1:
                 signal_status["road1"] = "GREEN"
                 signal_status["road2"] = "RED"
                 signal_status["time_remaining"] = self.green_time_road1 - elapsed_time
@@ -177,7 +203,21 @@ class TrafficLightController:
                 signal_status["active_road"] = "road2"
                 signal_status["time_remaining"] = self.green_time_road2
         else:
-            if elapsed_time < self.green_time_road2:
+            # Trigger early switch if road is empty
+            if early_switch:
+                signal_status["road1"] = "RED"
+                signal_status["road2"] = "YELLOW"
+                signal_status["time_remaining"] = self.YELLOW_TIME
+                signal_status["next_switch"] = True
+                # Force yellow transition
+                if elapsed_time >= self.MIN_GREEN_TIME + self.YELLOW_TIME:
+                    self.current_state = self.STATE_ROAD1_GREEN
+                    self.state_start_time = current_time
+                    signal_status["road1"] = "GREEN"
+                    signal_status["road2"] = "RED"
+                    signal_status["active_road"] = "road1"
+                    signal_status["time_remaining"] = self.green_time_road1
+            elif elapsed_time < self.green_time_road2:
                 signal_status["road1"] = "RED"
                 signal_status["road2"] = "GREEN"
                 signal_status["time_remaining"] = self.green_time_road2 - elapsed_time
