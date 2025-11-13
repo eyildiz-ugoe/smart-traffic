@@ -128,6 +128,8 @@ class SimulationModeStrategy(ModeStrategy):
 
     def close(self) -> None:
         self._running = False
+        self.counter_a.close()
+        self.counter_b.close()
         self.visualization.close()
 
 
