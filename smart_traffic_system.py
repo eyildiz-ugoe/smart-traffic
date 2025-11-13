@@ -96,8 +96,14 @@ def draw_traffic_light(frame: np.ndarray, signal: str, position: str) -> np.ndar
 
     if position == "top-left":
         x_offset, y_offset = 20, 20
-    else:
+    elif position == "top-right":
         x_offset, y_offset = w - 120, 20
+    elif position == "bottom-left":
+        x_offset, y_offset = 20, h - 240
+    elif position == "bottom-right":
+        x_offset, y_offset = w - 120, h - 240
+    else:  # pragma: no cover - defensive fallback for unexpected value
+        raise ValueError(f"Unsupported light position: {position}")
 
     cv2.rectangle(frame, (x_offset, y_offset), (x_offset + 80, y_offset + 200), (50, 50, 50), -1)
 
@@ -595,9 +601,17 @@ class SimulatedRoad:
         if orientation == "vertical":
             self.vehicle_length, self.vehicle_width = 70, 40
             self.stop_line = self.frame_height // 2 - 30
+            self._despawn_limit = self.frame_height
+            self._lane_left = self.frame_width // 2 - 60
+            self._lane_right = self.frame_width // 2 + 60
         else:
             self.vehicle_length, self.vehicle_width = 40, 70
-            self.stop_line = self.frame_width // 2 - 30
+            merge_entry = self.frame_width // 2 - 70
+            merge_exit = self.frame_width // 2 + 70
+            self.stop_line = max(0, merge_entry - 20)
+            self._despawn_limit = min(self.frame_width, merge_exit + 160)
+            self._lane_left = 0
+            self._lane_right = merge_exit
 
         self.background = self._create_background()
 
@@ -607,17 +621,25 @@ class SimulatedRoad:
         line_color = (200, 200, 200)
 
         if self.orientation == "vertical":
-            lane_left = self.frame_width // 2 - 60
-            lane_right = self.frame_width // 2 + 60
+            lane_left = self._lane_left
+            lane_right = self._lane_right
             cv2.rectangle(frame, (lane_left, 0), (lane_right, self.frame_height), road_color, -1)
             cv2.line(frame, (self.frame_width // 2, 0), (self.frame_width // 2, self.frame_height), line_color, 2)
             cv2.line(frame, (lane_left, self.stop_line), (lane_right, self.stop_line), (0, 0, 0), 2)
         else:
             lane_top = self.frame_height // 2 - 60
             lane_bottom = self.frame_height // 2 + 60
-            cv2.rectangle(frame, (0, lane_top), (self.frame_width, lane_bottom), road_color, -1)
-            cv2.line(frame, (0, self.frame_height // 2), (self.frame_width, self.frame_height // 2), line_color, 2)
+            cv2.rectangle(frame, (self._lane_left, lane_top), (self._lane_right, lane_bottom), road_color, -1)
+            cv2.line(frame, (self._lane_left, self.frame_height // 2), (self._lane_right, self.frame_height // 2), line_color, 2)
             cv2.line(frame, (self.stop_line, lane_top), (self.stop_line, lane_bottom), (0, 0, 0), 2)
+            merge_mark_right = min(self.frame_width - 1, self._lane_right + 20)
+            cv2.line(
+                frame,
+                (merge_mark_right, lane_top),
+                (merge_mark_right, lane_bottom),
+                (30, 30, 30),
+                2,
+            )
 
         return frame
 
@@ -701,38 +723,46 @@ class SimulatedRoad:
             vehicle.position = target_front - vehicle.length
             next_front_limit = vehicle.position
 
-        self.vehicles = [v for v in self.vehicles if v.position < self.frame_width]
+        self.vehicles = [v for v in self.vehicles if v.position < self._despawn_limit]
 
     def step(self, signal: str, dt: float) -> None:
         self._maybe_spawn(dt)
         self._update_vehicle_positions(signal, dt)
 
-    def render_frame(self) -> np.ndarray:
-        frame = self.background.copy()
-
+    def _draw_vehicle(self, frame: np.ndarray, vehicle: SimulatedVehicle) -> None:
         if self.orientation == "vertical":
             x = self.frame_width // 2 - self.vehicle_width // 2
-            for vehicle in self.vehicles:
-                top = int(vehicle.position)
-                cv2.rectangle(
-                    frame,
-                    (x, top),
-                    (x + self.vehicle_width, top + self.vehicle_length),
-                    vehicle.color,
-                    -1,
-                )
+            top = int(vehicle.position)
+            cv2.rectangle(
+                frame,
+                (x, top),
+                (x + self.vehicle_width, top + self.vehicle_length),
+                vehicle.color,
+                -1,
+            )
         else:
             y = self.frame_height // 2 - self.vehicle_width // 2
-            for vehicle in self.vehicles:
-                left = int(vehicle.position)
-                cv2.rectangle(
-                    frame,
-                    (left, y),
-                    (left + self.vehicle_length, y + self.vehicle_width),
-                    vehicle.color,
-                    -1,
-                )
+            left = int(vehicle.position)
+            cv2.rectangle(
+                frame,
+                (left, y),
+                (left + self.vehicle_length, y + self.vehicle_width),
+                vehicle.color,
+                -1,
+            )
 
+    def draw_vehicles(self, frame: np.ndarray) -> None:
+        """Render the road's vehicles onto ``frame`` in-place."""
+
+        if frame.shape[:2] != (self.frame_height, self.frame_width):  # pragma: no cover - defensive
+            raise ValueError("Frame size mismatch when drawing simulated vehicles")
+
+        for vehicle in self.vehicles:
+            self._draw_vehicle(frame, vehicle)
+
+    def render_frame(self) -> np.ndarray:
+        frame = self.background.copy()
+        self.draw_vehicles(frame)
         return frame
 
     def detections(self) -> List[VehicleDetection]:
@@ -791,6 +821,7 @@ class SimulationTrafficSystem:
 
         self.road1 = SimulatedRoad("vertical", frame_size, rng, spawn_rate=spawn_rate)
         self.road2 = SimulatedRoad("horizontal", frame_size, rng, spawn_rate=spawn_rate)
+        self._scene_background = self._create_scene_background()
 
         self.queue_analyzer_road1 = VehicleQueueAnalyzer(orientation="vertical")
         self.queue_analyzer_road2 = VehicleQueueAnalyzer(orientation="horizontal")
@@ -817,15 +848,21 @@ class SimulationTrafficSystem:
             road2_approach_line=frame_size[1] // 2,
         )
 
+    def _create_scene_background(self) -> np.ndarray:
+        """Combine road backgrounds into a single intersection view."""
+
+        base = np.full(self.frame_shape, 20, dtype=np.uint8)
+        road_overlay = np.maximum(self.road1.background, self.road2.background)
+        mask = road_overlay > 0
+        base[mask] = road_overlay[mask]
+        return base
+
     def _process_simulated_road(
         self, road: SimulatedRoad, analyzer: VehicleQueueAnalyzer
-    ) -> Tuple[QueueMetrics, np.ndarray]:
+    ) -> QueueMetrics:
         detections = road.detections()
         metrics = analyzer.calculate_metrics(self.frame_shape, detections)
-        frame = road.render_frame()
-        frame = draw_vehicle_annotations(frame, metrics)
-        frame = draw_threshold_lines(frame, metrics, analyzer)
-        return metrics, frame
+        return metrics
 
     def run(
         self,
@@ -844,10 +881,10 @@ class SimulationTrafficSystem:
                 self.road1.step(self._current_signal["road1"], dt)
                 self.road2.step(self._current_signal["road2"], dt)
 
-                metrics1, frame1 = self._process_simulated_road(
+                metrics1 = self._process_simulated_road(
                     self.road1, self.queue_analyzer_road1
                 )
-                metrics2, frame2 = self._process_simulated_road(
+                metrics2 = self._process_simulated_road(
                     self.road2, self.queue_analyzer_road2
                 )
 
@@ -865,16 +902,33 @@ class SimulationTrafficSystem:
                     road2_queue_pressure=metrics2.pressure,
                 )
 
-                frame1 = draw_traffic_light(frame1, self._current_signal["road1"], "top-right")
-                frame2 = draw_traffic_light(frame2, self._current_signal["road2"], "top-right")
+                frame = self._scene_background.copy()
+                self.road1.draw_vehicles(frame)
+                self.road2.draw_vehicles(frame)
 
-                frame1 = draw_queue_summary(frame1, metrics1, self._current_signal["road1"], (20, frame1.shape[0] - 60))
-                frame2 = draw_queue_summary(frame2, metrics2, self._current_signal["road2"], (20, frame2.shape[0] - 60))
+                frame = draw_vehicle_annotations(frame, metrics1)
+                frame = draw_vehicle_annotations(frame, metrics2)
+                frame = draw_threshold_lines(frame, metrics1, self.queue_analyzer_road1)
+                frame = draw_threshold_lines(frame, metrics2, self.queue_analyzer_road2)
 
-                combined = np.hstack([frame1, frame2])
+                frame = draw_traffic_light(frame, self._current_signal["road1"], "top-right")
+                frame = draw_traffic_light(frame, self._current_signal["road2"], "bottom-left")
+
+                frame = draw_queue_summary(
+                    frame,
+                    metrics1,
+                    self._current_signal["road1"],
+                    (frame.shape[1] - 240, 40),
+                )
+                frame = draw_queue_summary(
+                    frame,
+                    metrics2,
+                    self._current_signal["road2"],
+                    (20, frame.shape[0] - 120),
+                )
 
                 if display_window:
-                    cv2.imshow(window_name, combined)
+                    cv2.imshow(window_name, frame)
                     if cv2.waitKey(int(1000 / self.fps)) & 0xFF == ord("q"):
                         break
 
