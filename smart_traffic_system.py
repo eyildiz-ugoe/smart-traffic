@@ -857,19 +857,12 @@ class SimulationTrafficSystem:
                 self.stats_road1.update(metrics1.count)
                 self.stats_road2.update(metrics2.count)
 
+                # Use time-based switching for simulation (simpler and more predictable)
                 self._current_signal = self.controller.update_signal_timing(
                     metrics1.count,
                     metrics2.count,
                     road1_queue_pressure=metrics1.pressure,
                     road2_queue_pressure=metrics2.pressure,
-                    road1_stopline_occupied=metrics1.stopline_occupied,
-                    road2_stopline_occupied=metrics2.stopline_occupied,
-                    road1_exit_ready=metrics1.exit_zone_active or metrics1.count == 0,
-                    road2_exit_ready=metrics2.exit_zone_active or metrics2.count == 0,
-                    road1_leading_edge=metrics1.leading_edge,
-                    road2_leading_edge=metrics2.leading_edge,
-                    road1_approach_line=metrics1.approach_line,
-                    road2_approach_line=metrics2.approach_line,
                 )
 
                 frame1 = draw_traffic_light(frame1, self._current_signal["road1"], "top-right")
