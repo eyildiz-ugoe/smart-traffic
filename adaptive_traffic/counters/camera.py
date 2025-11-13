@@ -145,7 +145,7 @@ class CameraCounter(VehicleCounter):
     def step(self) -> CounterResult:
         ok, frame = self.capture.read()
         if not ok:  # pragma: no cover - depends on runtime videos
-            logger.warning("End of stream reached for %%s", self.config.video_path)
+            logger.warning("End of stream reached for %s", self.config.video_path)
             self._latest_frame = None
             self._latest_count = 0
             return CounterResult(count=0, frame=None)
