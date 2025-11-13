@@ -75,7 +75,7 @@ class AdaptiveController:
             return False
         if count_current > 0:
             return False
-        return count_other > 0 or self._time_since(self.state.phase_start) >= self.min_green_time
+        return count_other > 0
 
     def update(self, count_a: int, count_b: int) -> Tuple[LightState, LightState]:
         """Update the controller state using the latest vehicle counts."""
