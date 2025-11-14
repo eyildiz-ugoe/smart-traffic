@@ -73,6 +73,16 @@ class VehicleDetection:
         x, y, w, h = self.bbox
         return x + w
 
+    @property
+    def top_edge(self) -> int:
+        x, y, w, h = self.bbox
+        return y
+
+    @property
+    def left_edge(self) -> int:
+        x, y, w, h = self.bbox
+        return x
+
 
 @dataclass(slots=True)
 class QueueMetrics:
@@ -271,6 +281,7 @@ class VehicleQueueAnalyzer:
         *,
         approach_threshold_ratio: float = 0.65,
         exit_margin: int = 5,
+        line_contact_margin: int = 2,
     ) -> None:
         if not 0.0 < approach_threshold_ratio < 1.0:
             raise ValueError("approach_threshold_ratio must be between 0 and 1")
@@ -281,6 +292,7 @@ class VehicleQueueAnalyzer:
         self.counter = VehicleCounter()
         self._approach_threshold_ratio = approach_threshold_ratio
         self._exit_margin = exit_margin
+        self._line_contact_margin = max(0, line_contact_margin)
 
     @property
     def orientation(self) -> str:
@@ -353,10 +365,26 @@ class VehicleQueueAnalyzer:
             edges = [det.right_edge for det in detections]
 
         leading_edge = edges[0] if edges else None
-        stopline_occupied = any(edge >= approach_line for edge in edges)
-        exit_zone_active = any(edge >= exit_line for edge in edges)
+
+        stopline_occupied = any(
+            self._line_intersection(det, approach_line) for det in detections
+        )
+        exit_zone_active = any(
+            self._line_intersection(det, exit_line) for det in detections
+        )
 
         return approach_line, exit_line, stopline_occupied, exit_zone_active, leading_edge
+
+    def _line_intersection(self, detection: VehicleDetection, line_position: int) -> bool:
+        margin = self._line_contact_margin
+        if self.orientation == "vertical":
+            top = detection.top_edge - margin
+            bottom = detection.bottom_edge + margin
+            return top <= line_position <= bottom
+        else:
+            left = detection.left_edge - margin
+            right = detection.right_edge + margin
+            return left <= line_position <= right
 
 
 class SmartTrafficSystem:
@@ -585,6 +613,11 @@ class SimulatedRoad:
         *,
         spawn_rate: float = 3.5,
         max_vehicles: int = 10,
+        spawn_pause_chance: float = 0.0,
+        spawn_pause_duration: Tuple[float, float] = (2.0, 4.0),
+        spawn_pause_cooldown: Tuple[float, float] = (5.0, 9.0),
+        enforce_clearance: bool = False,
+        post_clear_pause: Tuple[float, float] | None = None,
     ) -> None:
         if orientation not in {"vertical", "horizontal"}:
             raise ValueError("orientation must be 'vertical' or 'horizontal'")
@@ -597,6 +630,18 @@ class SimulatedRoad:
 
         self.vehicles: List[SimulatedVehicle] = []
         self.min_gap = 12
+
+        self._spawn_pause_chance = max(0.0, spawn_pause_chance)
+        self._spawn_pause_duration_range = spawn_pause_duration
+        self._spawn_pause_cooldown_range = spawn_pause_cooldown
+        self._spawn_pause_remaining = 0.0
+        self._spawn_pause_cooldown = (
+            self.rng.uniform(*spawn_pause_cooldown) if self._spawn_pause_chance > 0.0 else 0.0
+        )
+        self._awaiting_clearance = False
+        self._enforce_clearance = enforce_clearance
+        self._post_clear_pause_range = post_clear_pause or (0.0, 0.0)
+        self._post_clear_pause_remaining = 0.0
 
         if orientation == "vertical":
             self.vehicle_length, self.vehicle_width = 70, 40
@@ -662,9 +707,45 @@ class SimulatedRoad:
             color=color,
         )
 
+    def _spawn_paused(self, dt: float) -> bool:
+        if self._spawn_pause_chance <= 0.0:
+            return False
+
+        if self._awaiting_clearance:
+            if not self._enforce_clearance or not self.vehicles:
+                self._awaiting_clearance = False
+                self._spawn_pause_cooldown = self.rng.uniform(*self._spawn_pause_cooldown_range)
+                if self._post_clear_pause_range[1] > 0:
+                    self._post_clear_pause_remaining = self.rng.uniform(*self._post_clear_pause_range)
+                return True
+            return True
+
+        if self._post_clear_pause_remaining > 0.0:
+            self._post_clear_pause_remaining = max(0.0, self._post_clear_pause_remaining - dt)
+            return True
+
+        if self._spawn_pause_remaining > 0.0:
+            self._spawn_pause_remaining = max(0.0, self._spawn_pause_remaining - dt)
+            if self._spawn_pause_remaining == 0.0:
+                self._awaiting_clearance = self._enforce_clearance
+            return True
+
+        self._spawn_pause_cooldown = max(0.0, self._spawn_pause_cooldown - dt)
+        if self._spawn_pause_cooldown == 0.0:
+            if self.rng.random() < self._spawn_pause_chance:
+                self._spawn_pause_remaining = self.rng.uniform(*self._spawn_pause_duration_range)
+                return True
+            self._spawn_pause_cooldown = self.rng.uniform(*self._spawn_pause_cooldown_range)
+
+        return False
+
     def _maybe_spawn(self, dt: float) -> None:
         if len(self.vehicles) >= self.max_vehicles:
             return
+
+        if self._spawn_paused(dt):
+            return
+
         probability = self.spawn_rate * dt
         if self.rng.random() < probability:
             self.vehicles.append(self._new_vehicle())
@@ -802,6 +883,8 @@ class SimulationTrafficSystem:
         *,
         seed: Optional[int] = None,
         spawn_rate: float = 3.5,
+        spawn_rate_road1: Optional[float] = None,
+        spawn_rate_road2: Optional[float] = None,
     ) -> None:
         if cv2 is None:  # pragma: no cover - requires optional dependency
             raise ImportError(
@@ -819,12 +902,58 @@ class SimulationTrafficSystem:
         self.frame_shape = (frame_size[0], frame_size[1], 3)
         rng = random.Random(seed)
 
-        self.road1 = SimulatedRoad("vertical", frame_size, rng, spawn_rate=spawn_rate)
-        self.road2 = SimulatedRoad("horizontal", frame_size, rng, spawn_rate=spawn_rate)
+        main_spawn_rate = (
+            spawn_rate_road1 if spawn_rate_road1 is not None else max(0.6, spawn_rate * 0.55)
+        )
+        side_spawn_rate = (
+            spawn_rate_road2 if spawn_rate_road2 is not None else max(0.3, spawn_rate * 0.35)
+        )
+
+        self.road1 = SimulatedRoad(
+            "vertical",
+            frame_size,
+            rng,
+            spawn_rate=main_spawn_rate,
+            max_vehicles=7,
+            spawn_pause_chance=1.0,
+            spawn_pause_duration=(4.0, 6.5),
+            spawn_pause_cooldown=(4.5, 8.0),
+            enforce_clearance=True,
+            post_clear_pause=(0.8, 1.6),
+        )
+        self.road2 = SimulatedRoad(
+            "horizontal",
+            frame_size,
+            rng,
+            spawn_rate=side_spawn_rate,
+            max_vehicles=3,
+            spawn_pause_chance=0.9,
+            spawn_pause_duration=(2.5, 4.5),
+            spawn_pause_cooldown=(3.0, 6.0),
+            enforce_clearance=True,
+            post_clear_pause=(0.9, 1.8),
+        )
         self._scene_background = self._create_scene_background()
 
-        self.queue_analyzer_road1 = VehicleQueueAnalyzer(orientation="vertical")
-        self.queue_analyzer_road2 = VehicleQueueAnalyzer(orientation="horizontal")
+        def _line_ratio(position: int, dimension: int) -> float:
+            ratio = position / float(max(1, dimension))
+            return max(0.05, min(0.95, ratio))
+
+        buffer_road1 = max(15, self.road1.vehicle_length // 2)
+        buffer_road2 = max(15, self.road2.vehicle_length // 2)
+
+        self.queue_analyzer_road1 = VehicleQueueAnalyzer(
+            orientation="vertical",
+            approach_threshold_ratio=_line_ratio(self.road1.stop_line, frame_size[0]),
+            exit_margin=max(5, buffer_road1 // 2),
+            line_contact_margin=max(1, buffer_road1 // 6),
+        )
+        self.queue_analyzer_road2 = VehicleQueueAnalyzer(
+            orientation="horizontal",
+            approach_threshold_ratio=_line_ratio(self.road2.stop_line, frame_size[1]),
+            exit_margin=max(5, buffer_road2 // 2),
+            line_contact_margin=max(1, buffer_road2 // 6),
+        )
 
         self.controller = TrafficLightController()
         self.stats_road1 = TrafficStats()
@@ -870,11 +999,18 @@ class SimulationTrafficSystem:
         max_frames: Optional[int] = None,
         display_window: bool = True,
         window_name: str = "Smart Traffic Simulation",
+        fullscreen: bool = False,
     ) -> None:
         logger.info("Simulation mode initialised. Press 'q' to quit.")
 
         dt = 1.0 / float(self.fps)
         frame_count = 0
+        fullscreen_active = fullscreen if display_window else False
+
+        if display_window:
+            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+            target_state = cv2.WINDOW_FULLSCREEN if fullscreen_active else cv2.WINDOW_NORMAL
+            cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, target_state)
 
         try:
             while max_frames is None or frame_count < max_frames:
@@ -894,12 +1030,19 @@ class SimulationTrafficSystem:
                 self.stats_road1.update(metrics1.count)
                 self.stats_road2.update(metrics2.count)
 
-                # Use time-based switching for simulation (simpler and more predictable)
                 self._current_signal = self.controller.update_signal_timing(
                     metrics1.count,
                     metrics2.count,
                     road1_queue_pressure=metrics1.pressure,
                     road2_queue_pressure=metrics2.pressure,
+                    road1_stopline_occupied=metrics1.stopline_occupied,
+                    road2_stopline_occupied=metrics2.stopline_occupied,
+                    road1_exit_ready=metrics1.count == 0,
+                    road2_exit_ready=metrics2.count == 0,
+                    road1_leading_edge=metrics1.leading_edge,
+                    road2_leading_edge=metrics2.leading_edge,
+                    road1_approach_line=metrics1.approach_line,
+                    road2_approach_line=metrics2.approach_line,
                 )
 
                 frame = self._scene_background.copy()
@@ -929,8 +1072,15 @@ class SimulationTrafficSystem:
 
                 if display_window:
                     cv2.imshow(window_name, frame)
-                    if cv2.waitKey(int(1000 / self.fps)) & 0xFF == ord("q"):
+                    key = cv2.waitKey(int(1000 / self.fps)) & 0xFF
+                    if key == ord("q"):
                         break
+                    if key in (ord("f"), ord("F")):
+                        fullscreen_active = not fullscreen_active
+                        target_state = (
+                            cv2.WINDOW_FULLSCREEN if fullscreen_active else cv2.WINDOW_NORMAL
+                        )
+                        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, target_state)
 
                 frame_count += 1
 
@@ -1035,12 +1185,27 @@ def main() -> None:
     )
     parser.add_argument("--fps", type=int, default=30, help="Simulation frame rate")
     parser.add_argument("--spawn-rate", type=float, default=3.5, help="Average vehicles spawned per second")
+    parser.add_argument(
+        "--spawn-rate-road1",
+        type=float,
+        help="Override spawn rate for road 1 in simulation mode",
+    )
+    parser.add_argument(
+        "--spawn-rate-road2",
+        type=float,
+        help="Override spawn rate for road 2 in simulation mode",
+    )
     parser.add_argument("--max-frames", type=int, help="Limit frames processed in simulation mode")
     parser.add_argument("--seed", type=int, help="Random seed for simulation reproducibility")
     parser.add_argument(
         "--no-display",
         action="store_true",
         help="Run simulation without rendering a GUI window",
+    )
+    parser.add_argument(
+        "--fullscreen",
+        action="store_true",
+        help="Start the simulation window in fullscreen mode",
     )
 
     args = parser.parse_args()
@@ -1051,10 +1216,15 @@ def main() -> None:
                 fps=args.fps,
                 seed=args.seed,
                 spawn_rate=args.spawn_rate,
+                spawn_rate_road1=args.spawn_rate_road1,
+                spawn_rate_road2=args.spawn_rate_road2,
             )
+            if args.fullscreen and args.no_display:
+                logger.warning("Ignoring --fullscreen because --no-display was set.")
             simulation.run(
                 max_frames=args.max_frames,
                 display_window=not args.no_display,
+                fullscreen=args.fullscreen and not args.no_display,
             )
         except ImportError as exc:
             logger.error("Missing dependency for simulation: %s", exc)

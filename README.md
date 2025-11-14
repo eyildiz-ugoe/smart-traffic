@@ -23,6 +23,7 @@ An intelligent two-way intersection system that adapts traffic light timing base
    - Queue pressure
    - Congestion level
    - Stopline status
+5. Fullscreen-ready viewer (press `F` to toggle) for immersive demos
 
 ## 🚀 Quick Start
 
@@ -82,9 +83,12 @@ Options:
   --orientation-road2 {vertical,horizontal}  Camera orientation road 2
   --fps INT                         Simulation frame rate (default: 30)
   --spawn-rate FLOAT                Vehicles per second (default: 3.5)
+  --spawn-rate-road1 FLOAT          Override spawn rate for road 1 (simulation)
+  --spawn-rate-road2 FLOAT          Override spawn rate for road 2 (simulation)
   --max-frames INT                  Limit frames in simulation
   --seed INT                        Random seed for reproducibility
   --no-display                      Run without GUI window
+  --fullscreen                      Launch simulation UI fullscreen (press F to toggle)
   -h, --help                        Show help message
 ```
 
@@ -93,6 +97,9 @@ Options:
 ```bash
 # Simulation with custom settings
 python smart_traffic_system.py --mode simulation --fps 30 --spawn-rate 4.0 --seed 42
+
+# Launch fullscreen immediately
+python smart_traffic_system.py --mode simulation --fullscreen
 
 # Real mode with specific videos
 python smart_traffic_system.py --video-road1 path/to/video1.mp4 --video-road2 path/to/video2.mp4

@@ -262,15 +262,18 @@ class TrafficLightController:
             return leading_edge >= approach_line - safety_margin
 
         road1_near_threshold = _near_threshold(road1_leading_edge, road1_approach_line)
+        road2_near_threshold = _near_threshold(road2_leading_edge, road2_approach_line)
 
         request_road1 = bool(road1_stopline_occupied) or road1_near_threshold
-        request_road2 = bool(road2_stopline_occupied)
+        request_road2 = bool(road2_stopline_occupied) or road2_near_threshold
 
         clear_road1 = bool(road1_exit_ready) if road1_exit_ready is not None else road1_vehicles == 0
         clear_road2 = bool(road2_exit_ready) if road2_exit_ready is not None else road2_vehicles == 0
 
         if road1_near_threshold:
             clear_road1 = False
+        if road2_near_threshold:
+            clear_road2 = False
 
         desired_state = self.current_state
         if request_road1:
