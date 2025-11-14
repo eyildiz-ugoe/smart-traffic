@@ -90,11 +90,13 @@ class SimulationModeStrategy(ModeStrategy):
             name="A",
             detection_length=70.0,
             spawn_rate_per_minute=config.spawn_rate_road_a,
+            clear_distance=420.0,
         )
         road_b = Road(
             name="B",
             detection_length=70.0,
             spawn_rate_per_minute=config.spawn_rate_road_b,
+            clear_distance=320.0,
         )
         self.world = SimulationWorld(road_a, road_b)
         self.counter_a = SimulatedCounter(
