@@ -67,14 +67,26 @@ class SimulationVisualization(VisualizationStrategy):
         )
         self.road_a_rect = pygame.Rect(
             self.intersection_rect.left,
-            self.intersection_rect.centery,
+            0,
             self.road_width,
-            self.height - self.intersection_rect.centery,
+            self.height,
+        )
+        self.road_a_approach_rect = pygame.Rect(
+            self.intersection_rect.left,
+            self.intersection_rect.bottom,
+            self.road_width,
+            self.height - self.intersection_rect.bottom,
         )
         self.road_b_rect = pygame.Rect(
             0,
             self.intersection_rect.top,
-            self.intersection_rect.centerx,
+            self.width,
+            self.road_width,
+        )
+        self.road_b_approach_rect = pygame.Rect(
+            0,
+            self.intersection_rect.top,
+            self.intersection_rect.left,
             self.road_width,
         )
         self.light_box_a = pygame.Rect(
@@ -101,7 +113,7 @@ class SimulationVisualization(VisualizationStrategy):
         lane_gap = 18
         lane_x = self.road_a_rect.centerx
         start_y = self.intersection_rect.bottom + 12
-        end_y = self.road_a_rect.bottom
+        end_y = self.road_a_approach_rect.bottom
         y = start_y
         while y < end_y:
             pygame.draw.line(
@@ -114,8 +126,8 @@ class SimulationVisualization(VisualizationStrategy):
             y += lane_line_length + lane_gap
 
         lane_y = self.road_b_rect.centery
-        start_x = self.road_b_rect.left
-        end_x = self.intersection_rect.left - 12
+        start_x = self.road_b_approach_rect.left
+        end_x = self.road_b_approach_rect.right - 12
         x = start_x
         while x < end_x:
             pygame.draw.line(
@@ -206,7 +218,7 @@ class SimulationVisualization(VisualizationStrategy):
 
         for vehicle in world.roads["A"].vehicles:
             front_position = max(-self.vehicle_length, vehicle.position)
-            front_y = int(self.height // 2 + front_position)
+            front_y = int(self.intersection_rect.bottom + front_position)
             body_rect = pygame.Rect(
                 lane_center_x - self.vehicle_width // 2,
                 front_y - self.vehicle_length,
@@ -226,7 +238,7 @@ class SimulationVisualization(VisualizationStrategy):
 
         for vehicle in world.roads["B"].vehicles:
             front_position = max(-self.vehicle_length, vehicle.position)
-            front_x = int(self.width // 2 - front_position)
+            front_x = int(self.intersection_rect.left - front_position)
             body_rect = pygame.Rect(
                 front_x - self.vehicle_length,
                 lane_center_y - self.vehicle_width // 2,

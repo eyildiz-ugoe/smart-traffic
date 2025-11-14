@@ -35,6 +35,7 @@ class Road:
     spawn_rate_per_minute: float = 12.0
     max_speed: float = 12.0
     min_speed: float = 8.0
+    clear_distance: float = 20.0
     vehicles: List[SimVehicle] = field(default_factory=list)
 
     def spawn_probability(self, dt: float) -> float:
@@ -45,7 +46,8 @@ class Road:
         self.vehicles.append(SimVehicle(position=self.length, speed=speed))
 
     def remove_passed(self) -> None:
-        self.vehicles = [vehicle for vehicle in self.vehicles if vehicle.position > -20]
+        threshold = -self.clear_distance
+        self.vehicles = [vehicle for vehicle in self.vehicles if vehicle.position > threshold]
 
     def count_in_detection(self) -> int:
         return sum(1 for vehicle in self.vehicles if vehicle.position <= self.detection_length)
