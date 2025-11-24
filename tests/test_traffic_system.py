@@ -192,6 +192,27 @@ def test_controller_threshold_priority_and_switching():
     assert controller.current_state == controller.STATE_ROAD1_GREEN
 
     # Once road1 clears and road2 still requests, switch to road2
+    # Advance time to ensure min green time has passed
+    clock.advance(controller.MIN_GREEN_TIME)
+    
+    status = controller.update_signal_timing(
+        road1_vehicles=0,
+        road2_vehicles=1,
+        road1_queue_pressure=0.0,
+        road2_queue_pressure=3.0,
+        road1_stopline_occupied=False,
+        road2_stopline_occupied=True,
+        road1_exit_ready=True,
+        road2_exit_ready=False,
+    )
+
+    # Expect Yellow first
+    assert status["road1"] == "YELLOW"
+    assert status["road2"] == "RED"
+    
+    # Advance through yellow
+    clock.advance(controller.YELLOW_TIME + 0.1)
+    
     status = controller.update_signal_timing(
         road1_vehicles=0,
         road2_vehicles=1,
@@ -207,6 +228,7 @@ def test_controller_threshold_priority_and_switching():
     assert status["road2"] == "GREEN"
 
     # Road1 requests while road2 is active; road1 has priority but must wait until road2 clears
+    # Road 2 just started green, so it should stay green for min time
     status = controller.update_signal_timing(
         road1_vehicles=1,
         road2_vehicles=1,
@@ -222,6 +244,25 @@ def test_controller_threshold_priority_and_switching():
     assert status["road2"] == "GREEN"
 
     # After road2 clears, priority should give road1 the green light
+    clock.advance(controller.MIN_GREEN_TIME)
+    
+    status = controller.update_signal_timing(
+        road1_vehicles=1,
+        road2_vehicles=0,
+        road1_queue_pressure=3.5,
+        road2_queue_pressure=0.0,
+        road1_stopline_occupied=True,
+        road2_stopline_occupied=False,
+        road1_exit_ready=False,
+        road2_exit_ready=True,
+    )
+    
+    # Expect Yellow
+    assert status["road1"] == "RED"
+    assert status["road2"] == "YELLOW"
+    
+    clock.advance(controller.YELLOW_TIME + 0.1)
+    
     status = controller.update_signal_timing(
         road1_vehicles=1,
         road2_vehicles=0,
@@ -275,6 +316,26 @@ def test_controller_holds_secondary_road_until_main_is_clear():
     assert status["road1"] == "GREEN"
     assert status["road2"] == "RED"
 
+    clock.advance(controller.MIN_GREEN_TIME)
+
+    status = controller.update_signal_timing(
+        road1_vehicles=0,
+        road2_vehicles=1,
+        road1_queue_pressure=0.0,
+        road2_queue_pressure=3.2,
+        road1_stopline_occupied=False,
+        road2_stopline_occupied=True,
+        road1_exit_ready=True,
+        road2_exit_ready=False,
+        road1_leading_edge=None,
+        road1_approach_line=200,
+    )
+    
+    # Expect Yellow
+    assert status["road1"] == "YELLOW"
+    
+    clock.advance(controller.YELLOW_TIME + 0.1)
+    
     status = controller.update_signal_timing(
         road1_vehicles=0,
         road2_vehicles=1,

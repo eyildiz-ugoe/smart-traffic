@@ -307,7 +307,29 @@ class VehicleQueueAnalyzer:
         approach_line, exit_line, stopline_occupied, exit_zone_active, leading_edge = (
             self._calculate_thresholds(frame_shape, sorted_detections)
         )
-        count, class_breakdown = self.counter.summarize(sorted_detections)
+
+        # Filter detections to only include vehicles that are approaching or at the stop line.
+        # Vehicles that have fully passed the approach line are considered "clearing" and
+        # should not contribute to the demand count for keeping the light green.
+        relevant_detections = []
+        for det in sorted_detections:
+            is_passed = False
+            if self.orientation == "vertical":
+                # Moving Top to Bottom. Position increases.
+                # If top_edge > approach_line, the vehicle has fully crossed the line.
+                if det.top_edge > approach_line:
+                    is_passed = True
+            else:
+                # Moving Left to Right. Position increases.
+                # If left_edge > approach_line, the vehicle has fully crossed the line.
+                if det.left_edge > approach_line:
+                    is_passed = True
+            
+            if not is_passed:
+                relevant_detections.append(det)
+
+        pressure = self._calculate_pressure(frame_shape, relevant_detections)
+        count, class_breakdown = self.counter.summarize(relevant_detections)
         return QueueMetrics(
             count=count,
             sorted_detections=list(sorted_detections),
@@ -629,7 +651,7 @@ class SimulatedRoad:
         self.max_vehicles = max_vehicles
 
         self.vehicles: List[SimulatedVehicle] = []
-        self.min_gap = 12
+        self.min_gap = 30
 
         self._spawn_pause_chance = max(0.0, spawn_pause_chance)
         self._spawn_pause_duration_range = spawn_pause_duration
@@ -650,7 +672,7 @@ class SimulatedRoad:
             self._lane_left = self.frame_width // 2 - 60
             self._lane_right = self.frame_width // 2 + 60
         else:
-            self.vehicle_length, self.vehicle_width = 40, 70
+            self.vehicle_length, self.vehicle_width = 70, 40
             merge_entry = self.frame_width // 2 - 70
             merge_exit = self.frame_width // 2 + 70
             self.stop_line = max(0, merge_entry - 20)
@@ -748,7 +770,28 @@ class SimulatedRoad:
 
         probability = self.spawn_rate * dt
         if self.rng.random() < probability:
-            self.vehicles.append(self._new_vehicle())
+            # Check if spawn area is clear
+            new_vehicle = self._new_vehicle()
+            
+            # Check for overlap with existing vehicles
+            is_clear = True
+            for v in self.vehicles:
+                # Simple 1D overlap check
+                # New vehicle is at new_vehicle.position (top/left) to new_vehicle.position + length (bottom/right)
+                # Existing vehicle is at v.position to v.position + length
+                
+                new_start = new_vehicle.position
+                new_end = new_vehicle.position + new_vehicle.length
+                v_start = v.position
+                v_end = v.position + v.length
+                
+                # Check if intervals overlap
+                if max(new_start, v_start) < min(new_end, v_end) + self.min_gap:
+                    is_clear = False
+                    break
+            
+            if is_clear:
+                self.vehicles.append(new_vehicle)
 
     def _update_vehicle_positions(self, signal: str, dt: float) -> None:
         if self.orientation == "vertical":

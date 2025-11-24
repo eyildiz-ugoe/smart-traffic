@@ -103,32 +103,6 @@ class TrafficLightController:
         road1_approach_line: Optional[int] = None,
         road2_approach_line: Optional[int] = None,
     ) -> Dict[str, object]:
-        threshold_logic = any(
-            flag is not None
-            for flag in (
-                road1_stopline_occupied,
-                road2_stopline_occupied,
-                road1_exit_ready,
-                road2_exit_ready,
-            )
-        )
-
-        if threshold_logic:
-            return self._update_with_threshold_logic(
-                road1_vehicles=road1_vehicles,
-                road2_vehicles=road2_vehicles,
-                road1_queue_pressure=road1_queue_pressure,
-                road2_queue_pressure=road2_queue_pressure,
-                road1_stopline_occupied=road1_stopline_occupied,
-                road2_stopline_occupied=road2_stopline_occupied,
-                road1_exit_ready=road1_exit_ready,
-                road2_exit_ready=road2_exit_ready,
-                road1_leading_edge=road1_leading_edge,
-                road2_leading_edge=road2_leading_edge,
-                road1_approach_line=road1_approach_line,
-                road2_approach_line=road2_approach_line,
-            )
-
         current_time = self._time_func()
         elapsed_time = current_time - self.state_start_time
 
@@ -141,13 +115,23 @@ class TrafficLightController:
 
         # Smart early switching: if current road is empty and other has traffic, switch early
         early_switch = False
+        
+        # Determine if roads have active demand beyond just vehicle count
+        road1_has_demand = road1_vehicles > 0
+        if road1_stopline_occupied is not None and road1_stopline_occupied:
+            road1_has_demand = True
+            
+        road2_has_demand = road2_vehicles > 0
+        if road2_stopline_occupied is not None and road2_stopline_occupied:
+            road2_has_demand = True
+
         if self.current_state == self.STATE_ROAD1_GREEN:
             # Road 1 is green, check if it's empty and road 2 has traffic
-            if road1_vehicles == 0 and road2_vehicles > 0 and elapsed_time >= self.MIN_GREEN_TIME:
+            if road1_vehicles == 0 and road2_has_demand and elapsed_time >= self.MIN_GREEN_TIME:
                 early_switch = True
         else:
             # Road 2 is green, check if it's empty and road 1 has traffic
-            if road2_vehicles == 0 and road1_vehicles > 0 and elapsed_time >= self.MIN_GREEN_TIME:
+            if road2_vehicles == 0 and road1_has_demand and elapsed_time >= self.MIN_GREEN_TIME:
                 early_switch = True
 
         signal_status: Dict[str, object] = {
@@ -238,94 +222,3 @@ class TrafficLightController:
 
         return signal_status
 
-    def _update_with_threshold_logic(
-        self,
-        *,
-        road1_vehicles: int,
-        road2_vehicles: int,
-        road1_queue_pressure: Optional[float],
-        road2_queue_pressure: Optional[float],
-        road1_stopline_occupied: Optional[bool],
-        road2_stopline_occupied: Optional[bool],
-        road1_exit_ready: Optional[bool],
-        road2_exit_ready: Optional[bool],
-        road1_leading_edge: Optional[int],
-        road2_leading_edge: Optional[int],
-        road1_approach_line: Optional[int],
-        road2_approach_line: Optional[int],
-    ) -> Dict[str, object]:
-        def _near_threshold(leading_edge: Optional[int], approach_line: Optional[int]) -> bool:
-            if leading_edge is None or approach_line is None:
-                return False
-
-            safety_margin = max(1, int(round(max(1, approach_line) * 0.05)))
-            return leading_edge >= approach_line - safety_margin
-
-        road1_near_threshold = _near_threshold(road1_leading_edge, road1_approach_line)
-        road2_near_threshold = _near_threshold(road2_leading_edge, road2_approach_line)
-
-        request_road1 = bool(road1_stopline_occupied) or road1_near_threshold
-        request_road2 = bool(road2_stopline_occupied) or road2_near_threshold
-
-        clear_road1 = bool(road1_exit_ready) if road1_exit_ready is not None else road1_vehicles == 0
-        clear_road2 = bool(road2_exit_ready) if road2_exit_ready is not None else road2_vehicles == 0
-
-        if road1_near_threshold:
-            clear_road1 = False
-        if road2_near_threshold:
-            clear_road2 = False
-
-        desired_state = self.current_state
-        if request_road1:
-            desired_state = self.STATE_ROAD1_GREEN
-        elif request_road2:
-            desired_state = self.STATE_ROAD2_GREEN
-
-        if desired_state == self.current_state:
-            self._pending_state = None
-        else:
-            self._pending_state = desired_state
-
-        can_switch = False
-        if self._pending_state is not None and self._pending_state != self.current_state:
-            if self.current_state == self.STATE_ROAD1_GREEN:
-                can_switch = clear_road1
-            else:
-                can_switch = clear_road2
-
-        if can_switch:
-            self.current_state = self._pending_state
-            self.state_start_time = self._time_func()
-            self._pending_state = None
-
-        active_state = self.current_state
-        signal_status: Dict[str, object] = {
-            "road1": "GREEN" if active_state == self.STATE_ROAD1_GREEN else "RED",
-            "road2": "GREEN" if active_state == self.STATE_ROAD2_GREEN else "RED",
-            "time_remaining": 0.0,
-            "next_switch": self._pending_state is not None,
-            "active_road": "road1" if active_state == self.STATE_ROAD1_GREEN else "road2",
-            "green_durations": {
-                "road1": self.calculate_green_time(
-                    road1_vehicles, queue_pressure=road1_queue_pressure
-                ),
-                "road2": self.calculate_green_time(
-                    road2_vehicles, queue_pressure=road2_queue_pressure
-                ),
-            },
-            "queue_pressure": {
-                "road1": road1_queue_pressure,
-                "road2": road2_queue_pressure,
-            },
-            "pending_state": (
-                "road1" if self._pending_state == self.STATE_ROAD1_GREEN else "road2"
-            )
-            if self._pending_state is not None
-            else None,
-            "requests": {
-                "road1": request_road1,
-                "road2": request_road2,
-            },
-        }
-
-        return signal_status
