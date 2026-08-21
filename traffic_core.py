@@ -48,12 +48,18 @@ class TrafficLightController:
     PRESSURE_BONUS_MULTIPLIER = 2
 
     def __init__(self, time_func: Callable[[], float] | None = None) -> None:
-        self._time_func = time_func or time.time
+        self._time_func = time_func or time.monotonic
         self.current_state = self.STATE_ROAD1_GREEN
         self.state_start_time = self._time_func()
         self.green_time_road1 = self.MIN_GREEN_TIME
         self.green_time_road2 = self.MIN_GREEN_TIME
         self._pending_state: Optional[int] = None
+        # Timestamp when the current yellow phase began (early switch or
+        # normal green expiry); None outside a changeover. Every switch is
+        # routed through this stamp so a full yellow is always displayed,
+        # even when the adaptive green duration is recomputed downward
+        # below the already-elapsed time.
+        self._yellow_start: Optional[float] = None
 
     def calculate_green_time(
         self, vehicle_count: int, queue_pressure: Optional[float] = None
@@ -154,71 +160,54 @@ class TrafficLightController:
         }
 
         if self.current_state == self.STATE_ROAD1_GREEN:
-            # Trigger early switch if road is empty
-            if early_switch:
+            # A changeover begins on an early switch OR when the (adaptively
+            # recomputed) green time has expired. Once the yellow has begun,
+            # complete it even if demand fluctuates; every path displays a
+            # full yellow phase — including when the green duration shrinks
+            # below the already-elapsed time.
+            if early_switch or self._yellow_start is not None or elapsed_time >= self.green_time_road1:
+                if self._yellow_start is None:
+                    self._yellow_start = current_time
+                yellow_elapsed = current_time - self._yellow_start
                 signal_status["road1"] = "YELLOW"
                 signal_status["road2"] = "RED"
-                signal_status["time_remaining"] = self.YELLOW_TIME
+                signal_status["time_remaining"] = max(0.0, self.YELLOW_TIME - yellow_elapsed)
                 signal_status["next_switch"] = True
-                # Force yellow transition
-                if elapsed_time >= self.MIN_GREEN_TIME + self.YELLOW_TIME:
+                # Complete the transition only after a full yellow phase.
+                if yellow_elapsed >= self.YELLOW_TIME:
                     self.current_state = self.STATE_ROAD2_GREEN
                     self.state_start_time = current_time
+                    self._yellow_start = None
                     signal_status["road1"] = "RED"
                     signal_status["road2"] = "GREEN"
                     signal_status["active_road"] = "road2"
                     signal_status["time_remaining"] = self.green_time_road2
-            elif elapsed_time < self.green_time_road1:
+            else:
                 signal_status["road1"] = "GREEN"
                 signal_status["road2"] = "RED"
                 signal_status["time_remaining"] = self.green_time_road1 - elapsed_time
-            elif elapsed_time < self.green_time_road1 + self.YELLOW_TIME:
-                signal_status["road1"] = "YELLOW"
-                signal_status["road2"] = "RED"
-                signal_status["time_remaining"] = (
-                    self.green_time_road1 + self.YELLOW_TIME - elapsed_time
-                )
-            else:
-                signal_status["next_switch"] = True
-                self.current_state = self.STATE_ROAD2_GREEN
-                self.state_start_time = current_time
-                signal_status["road1"] = "RED"
-                signal_status["road2"] = "GREEN"
-                signal_status["active_road"] = "road2"
-                signal_status["time_remaining"] = self.green_time_road2
         else:
-            # Trigger early switch if road is empty
-            if early_switch:
+            if early_switch or self._yellow_start is not None or elapsed_time >= self.green_time_road2:
+                if self._yellow_start is None:
+                    self._yellow_start = current_time
+                yellow_elapsed = current_time - self._yellow_start
                 signal_status["road1"] = "RED"
                 signal_status["road2"] = "YELLOW"
-                signal_status["time_remaining"] = self.YELLOW_TIME
+                signal_status["time_remaining"] = max(0.0, self.YELLOW_TIME - yellow_elapsed)
                 signal_status["next_switch"] = True
-                # Force yellow transition
-                if elapsed_time >= self.MIN_GREEN_TIME + self.YELLOW_TIME:
+                # Complete the transition only after a full yellow phase.
+                if yellow_elapsed >= self.YELLOW_TIME:
                     self.current_state = self.STATE_ROAD1_GREEN
                     self.state_start_time = current_time
+                    self._yellow_start = None
                     signal_status["road1"] = "GREEN"
                     signal_status["road2"] = "RED"
                     signal_status["active_road"] = "road1"
                     signal_status["time_remaining"] = self.green_time_road1
-            elif elapsed_time < self.green_time_road2:
+            else:
                 signal_status["road1"] = "RED"
                 signal_status["road2"] = "GREEN"
                 signal_status["time_remaining"] = self.green_time_road2 - elapsed_time
-            elif elapsed_time < self.green_time_road2 + self.YELLOW_TIME:
-                signal_status["road1"] = "RED"
-                signal_status["road2"] = "YELLOW"
-                signal_status["time_remaining"] = (
-                    self.green_time_road2 + self.YELLOW_TIME - elapsed_time
-                )
-            else:
-                signal_status["next_switch"] = True
-                self.current_state = self.STATE_ROAD1_GREEN
-                self.state_start_time = current_time
-                signal_status["road1"] = "GREEN"
-                signal_status["road2"] = "RED"
-                signal_status["active_road"] = "road1"
-                signal_status["time_remaining"] = self.green_time_road1
 
         return signal_status
 

@@ -50,7 +50,13 @@ class Road:
         self.vehicles = [vehicle for vehicle in self.vehicles if vehicle.position > threshold]
 
     def count_in_detection(self) -> int:
-        return sum(1 for vehicle in self.vehicles if vehicle.position <= self.detection_length)
+        # Only vehicles still upstream of the stop line (position >= 0) count
+        # as demand; vehicles clearing the intersection are excluded.
+        return sum(
+            1
+            for vehicle in self.vehicles
+            if 0.0 <= vehicle.position <= self.detection_length
+        )
 
     def average_wait(self) -> float:
         if not self.vehicles:
@@ -84,7 +90,9 @@ class SimulationWorld:
         for name, road in self.roads.items():
             can_move = name in green
             for vehicle in road.vehicles:
-                vehicle.advance(dt, can_move=can_move and vehicle.position >= -5)
+                # Vehicles that already crossed the stop line (position < 0)
+                # must keep moving until removal, regardless of the signal.
+                vehicle.advance(dt, can_move=can_move or vehicle.position < 0)
             road.remove_passed()
 
     def counts(self) -> Dict[str, int]:

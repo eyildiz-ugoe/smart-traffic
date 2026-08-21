@@ -43,6 +43,25 @@ else:  # pragma: no cover - import success path depends on runtime environment
     _YOLO_IMPORT_ERROR = None
 
 
+def resolve_detection_device(requested: str | None) -> str | None:
+    """Return a usable inference device, falling back to CPU when CUDA is absent."""
+
+    if requested is None or not str(requested).startswith("cuda"):
+        return requested
+
+    try:
+        import torch
+    except ImportError:
+        logger.info("PyTorch unavailable; using CPU for detection")
+        return "cpu"
+
+    if not torch.cuda.is_available():
+        logger.info("CUDA not available; falling back to CPU for detection")
+        return "cpu"
+
+    return requested
+
+
 @dataclass(slots=True)
 class DetectorConfig:
     """Configuration options for the YOLO vehicle detector."""
@@ -227,6 +246,7 @@ class VehicleDetector:
         self.config = config or DetectorConfig()
         classes = list(self.config.classes) if self.config.classes is not None else [2, 3, 5, 7]
         self._target_classes = set(int(cls) for cls in classes)
+        self._device = resolve_detection_device(self.config.device)
 
         model_path = Path(self.config.model_path)
         # YOLO accepts either a local path or a model name; don't resolve unless it exists locally
@@ -241,7 +261,7 @@ class VehicleDetector:
             verbose=False,
             conf=self.config.confidence,
             iou=self.config.iou,
-            device=self.config.device,
+            device=self._device,
         )[0]
 
         detections: List[VehicleDetection] = []
@@ -486,16 +506,35 @@ class SmartTrafficSystem:
         annotated_frame = draw_threshold_lines(annotated_frame, metrics, analyzer)
         return metrics, annotated_frame
 
-    def run(self):
+    def run(
+        self,
+        max_frames: Optional[int] = None,
+        *,
+        display_window: bool = True,
+        window_name: str = "Smart Traffic Light System",
+        fullscreen: bool = False,
+    ):
         """
         Main loop to run the smart traffic system.
+
+        Args:
+            max_frames: Optional frame budget; ``None`` runs until 'q'.
+            display_window: Render a GUI window; disable for headless runs.
+            window_name: Title of the display window.
+            fullscreen: Start fullscreen (press 'f' to toggle).
         """
         logger.info("Smart Traffic Light Automation System initialised. Press 'q' to quit.")
 
         frame_count = 0
-        
+        fullscreen_active = fullscreen and display_window
+
+        if display_window:
+            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+            target_state = cv2.WINDOW_FULLSCREEN if fullscreen_active else cv2.WINDOW_NORMAL
+            cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, target_state)
+
         try:
-            while True:
+            while max_frames is None or frame_count < max_frames:
                 # Read frames from both videos
                 ret1, frame1 = self.cap_road1.read()
                 ret2, frame2 = self.cap_road2.read()
@@ -561,7 +600,8 @@ class SmartTrafficSystem:
                 combined_frame = np.hstack([frame1, frame2])
 
                 # Display the result
-                cv2.imshow('Smart Traffic Light System', combined_frame)
+                if display_window:
+                    cv2.imshow(window_name, combined_frame)
 
                 # Print statistics every 30 frames
                 if frame_count % 30 == 0:
@@ -579,11 +619,19 @@ class SmartTrafficSystem:
                     )
                 
                 frame_count += 1
-                
-                # Check for quit command
-                if cv2.waitKey(30) & 0xFF == ord('q'):
-                    break
-                    
+
+                # Check for quit / fullscreen-toggle commands
+                if display_window:
+                    key = cv2.waitKey(30) & 0xFF
+                    if key == ord('q'):
+                        break
+                    if key in (ord('f'), ord('F')):
+                        fullscreen_active = not fullscreen_active
+                        target_state = (
+                            cv2.WINDOW_FULLSCREEN if fullscreen_active else cv2.WINDOW_NORMAL
+                        )
+                        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, target_state)
+
         except Exception:
             logger.exception("Error occurred during smart traffic system execution.")
             raise
@@ -591,7 +639,8 @@ class SmartTrafficSystem:
             # Cleanup
             self.cap_road1.release()
             self.cap_road2.release()
-            cv2.destroyAllWindows()
+            if display_window:
+                cv2.destroyAllWindows()
             
             # Print final statistics
             logger.info(
@@ -998,7 +1047,11 @@ class SimulationTrafficSystem:
             line_contact_margin=max(1, buffer_road2 // 6),
         )
 
-        self.controller = TrafficLightController()
+        # Drive the controller from simulated time so signal timing follows the
+        # frame clock (dt per frame) instead of wall-clock time. This keeps
+        # behaviour identical between display and headless runs.
+        self._sim_time = 0.0
+        self.controller = TrafficLightController(time_func=lambda: self._sim_time)
         self.stats_road1 = TrafficStats()
         self.stats_road2 = TrafficStats()
 
@@ -1057,6 +1110,7 @@ class SimulationTrafficSystem:
 
         try:
             while max_frames is None or frame_count < max_frames:
+                self._sim_time += dt
                 self.road1.step(self._current_signal["road1"], dt)
                 self.road2.step(self._current_signal["road2"], dt)
 
@@ -1204,6 +1258,8 @@ def resolve_video_sources(
 
 def main() -> None:
     """Entry-point for both the real and simulation modes."""
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     parser = argparse.ArgumentParser(description="Smart traffic management system")
     parser.add_argument(

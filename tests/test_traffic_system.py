@@ -57,21 +57,56 @@ def test_controller_switches_after_green_and_yellow():
     assert status["road1"] == "GREEN"
     assert status["road2"] == "RED"
 
-    clock.advance(controller.green_time_road1 + controller.YELLOW_TIME + 0.1)
-    status = controller.update_signal_timing(road1_vehicles=1, road2_vehicles=6)
+    # Green expires -> a full yellow phase must be displayed first.
+    clock.advance(controller.green_time_road1 + 0.1)
+    status = controller.update_signal_timing(road1_vehicles=5, road2_vehicles=1)
+    assert controller.current_state == controller.STATE_ROAD1_GREEN
+    assert status["road1"] == "YELLOW"
 
+    clock.advance(controller.YELLOW_TIME + 0.05)
+    status = controller.update_signal_timing(road1_vehicles=5, road2_vehicles=1)
     assert controller.current_state == controller.STATE_ROAD2_GREEN
     assert status["road1"] == "RED"
     assert status["road2"] == "GREEN"
     assert status["time_remaining"] == controller.green_time_road2
 
-    clock.advance(controller.green_time_road2 + controller.YELLOW_TIME + 0.1)
-    status = controller.update_signal_timing(road1_vehicles=4, road2_vehicles=0)
+    # And the same yellow-first sequencing on the way back.
+    clock.advance(controller.green_time_road2 + 0.1)
+    status = controller.update_signal_timing(road1_vehicles=4, road2_vehicles=1)
+    assert status["road2"] == "YELLOW"
 
+    clock.advance(controller.YELLOW_TIME + 0.05)
+    status = controller.update_signal_timing(road1_vehicles=4, road2_vehicles=1)
     assert controller.current_state == controller.STATE_ROAD1_GREEN
     assert status["road1"] == "GREEN"
     assert status["road2"] == "RED"
     assert status["time_remaining"] == controller.green_time_road1
+
+
+def test_controller_never_skips_yellow_when_green_time_shrinks():
+    """Regression: recomputing a shorter green must not jump straight to red.
+
+    With 8 vehicles the green window is 30s. If the count then drops so the
+    recomputed window (10s) is below the already-elapsed time (15s), the old
+    logic flipped road1 green->red and gave road2 green in the same update.
+    """
+
+    clock = FakeClock()
+    controller = TrafficLightController(time_func=clock)
+
+    status = controller.update_signal_timing(road1_vehicles=8, road2_vehicles=2)
+    assert status["road1"] == "GREEN"
+
+    clock.advance(15.0)
+    status = controller.update_signal_timing(road1_vehicles=2, road2_vehicles=2)
+    assert controller.current_state == controller.STATE_ROAD1_GREEN
+    assert status["road1"] == "YELLOW"
+    assert status["road2"] == "RED"
+
+    clock.advance(controller.YELLOW_TIME + 0.05)
+    status = controller.update_signal_timing(road1_vehicles=2, road2_vehicles=2)
+    assert controller.current_state == controller.STATE_ROAD2_GREEN
+    assert status["road2"] == "GREEN"
 
 
 def test_scenario_validation_and_iteration():
@@ -440,3 +475,78 @@ def test_simulation_mode_generates_metrics_without_display():
     assert simulation.last_metrics_road2 is not None
     assert simulation.stats_road1.avg_vehicles_per_frame >= 0.0
     assert simulation.stats_road2.avg_vehicles_per_frame >= 0.0
+
+
+def test_controller_early_switch_never_skips_yellow():
+    """Regression: demand appearing late must still get a full yellow phase."""
+
+    clock = FakeClock()
+    controller = TrafficLightController(time_func=clock)
+
+    # Road 1 green with heavy traffic -> 30s green window.
+    status = controller.update_signal_timing(road1_vehicles=8, road2_vehicles=0)
+    assert status["road1"] == "GREEN"
+
+    # Demand appears at t=10, well past MIN_GREEN + YELLOW. The old logic
+    # switched straight to road2 green here, skipping yellow entirely.
+    clock.advance(10.0)
+    status = controller.update_signal_timing(road1_vehicles=0, road2_vehicles=3)
+
+    assert status["road1"] == "YELLOW"
+    assert status["road2"] == "RED"
+    assert controller.current_state == controller.STATE_ROAD1_GREEN
+
+    # Only after a full yellow phase does the switch complete.
+    clock.advance(controller.YELLOW_TIME + 0.05)
+    status = controller.update_signal_timing(road1_vehicles=0, road2_vehicles=3)
+
+    assert controller.current_state == controller.STATE_ROAD2_GREEN
+    assert status["road2"] == "GREEN"
+
+
+def test_controller_early_yellow_completes_even_if_demand_fluctuates():
+    """Once the early yellow begins, the changeover must run to completion."""
+
+    clock = FakeClock()
+    controller = TrafficLightController(time_func=clock)
+
+    controller.update_signal_timing(road1_vehicles=8, road2_vehicles=0)
+    clock.advance(10.0)
+    status = controller.update_signal_timing(road1_vehicles=0, road2_vehicles=3)
+    assert status["road1"] == "YELLOW"
+
+    # Mid-yellow the counts change (road1 gets a car); the yellow must not abort.
+    clock.advance(1.0)
+    status = controller.update_signal_timing(road1_vehicles=1, road2_vehicles=3)
+    assert status["road1"] == "YELLOW"
+
+    clock.advance(controller.YELLOW_TIME)
+    controller.update_signal_timing(road1_vehicles=1, road2_vehicles=3)
+    assert controller.current_state == controller.STATE_ROAD2_GREEN
+
+
+def test_resolve_detection_device_falls_back_without_cuda(monkeypatch):
+    from smart_traffic_system import resolve_detection_device
+
+    # Non-CUDA requests pass through untouched.
+    assert resolve_detection_device(None) is None
+    assert resolve_detection_device("cpu") == "cpu"
+
+    # With torch missing entirely, CUDA requests fall back to CPU.
+    monkeypatch.setitem(sys.modules, "torch", None)
+    assert resolve_detection_device("cuda") == "cpu"
+
+
+def test_simulation_controller_uses_simulated_time():
+    """Regression: headless runs must advance controller time by dt per frame."""
+
+    if cv2 is None or np is None:
+        pytest.skip("simulation requires cv2 and numpy")
+
+    simulation = SimulationTrafficSystem(fps=30, seed=7)
+    simulation.run(max_frames=90, display_window=False)
+
+    # 90 frames at 30 fps -> exactly 3 simulated seconds, regardless of how
+    # fast the frames were processed in wall-clock time.
+    assert simulation._sim_time == pytest.approx(90 / 30.0)
+    assert simulation.controller._time_func() == pytest.approx(simulation._sim_time)

@@ -28,3 +28,9 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Tooling state
+.claude-octopus/
+
+# Stray Windows shell-cache artifacts
+%SystemDrive%/

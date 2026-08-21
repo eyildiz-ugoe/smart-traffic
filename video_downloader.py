@@ -8,6 +8,7 @@ Author: Traffic Automation Team
 Date: October 2025
 """
 
+import hashlib
 import urllib.request
 import os
 from pathlib import Path
@@ -20,18 +21,55 @@ class TrafficVideoSetup:
     Setup helper for downloading traffic videos and installing dependencies.
     """
     
-    # Sample traffic video URLs (royalty-free from Pexels/Pixabay)
+    # Royalty-free sample videos with direct-download URLs (verified 2026-08).
+    #
+    # road1/road2 ship with the repository via Git LFS. Pexels removed its
+    # unauthenticated /download/ endpoints, so those two now fall back to the
+    # synthesized test videos when absent; see README "Demo videos" for
+    # manually downloadable sources.
+    #
+    # pedestrian.mp4  -> Mixkit "Aerial view of people at pedestrian crossing"
+    #                    (Mixkit Free License), fallback: Urban Tracker "Rouen"
+    #                    research sequence (Jodoin et al., WACV 2014).
+    # intersection.mp4 -> Mixkit "Busy intersection aerial view" (Mixkit Free
+    #                    License), fallback: Urban Tracker "Sherbrooke".
     VIDEO_URLS = {
-        'road1.mp4': [
-            'https://www.pexels.com/video/854100/download/',  # Heavy traffic
-            'https://www.pexels.com/video/857194/download/',  # Medium traffic
+        'road1.mp4': [],
+        'road2.mp4': [],
+        # Case 1 real mode: elevated crosswalk view, pedestrians + vehicles.
+        'rouen_crosswalk.avi': [
+            'https://www.jpjodoin.com/urbantracker/dataset/rouen/rouen_video.avi',
         ],
-        'road2.mp4': [
-            'https://www.pexels.com/video/3044127/download/',  # Light traffic
-            'https://www.pexels.com/video/4812458/download/',  # Variable traffic
-        ]
+        # Case 3 real mode: fixed camera over a four-way intersection.
+        'sherbrooke_intersection.avi': [
+            'https://www.jpjodoin.com/urbantracker/dataset/sherbrooke/sherbrooke_video.avi',
+        ],
+        # Presentation b-roll (aerial views; too high for reliable YOLOv8n).
+        'pedestrian.mp4': [
+            'https://assets.mixkit.co/videos/61/61-720.mp4',
+        ],
+        'intersection.mp4': [
+            'https://assets.mixkit.co/videos/60/60-720.mp4',
+        ],
     }
     
+    #: Expected SHA-256 of pinned downloads (computed 2026-08-21). A hash
+    #: mismatch fails the download closed rather than feeding unexpected
+    #: bytes from a third-party host into the video decoders.
+    VIDEO_SHA256 = {
+        'rouen_crosswalk.avi':
+            '1604fb168ef88e8fc1cde7be28416433bfff9cf23c3053eebb107edb39238bdd',
+        'sherbrooke_intersection.avi':
+            'ead4eada5a281e6a5054ea325abe939549e6440807a27c731aa9d54a4a0b71ef',
+        'pedestrian.mp4':
+            'baed59da05bc93811440556f42d7f8b475c169563ce9504f84382caa91b7a76a',
+        'intersection.mp4':
+            'c3b679464744970b9521a9c3c14e2f793e142a492d6e81c6667bae2a64f5b6de',
+    }
+
+    #: Hard ceiling for any single download; the pinned videos are <= 25 MB.
+    MAX_DOWNLOAD_BYTES = 200 * 1024 * 1024
+
     REQUIRED_PACKAGES = [
         'opencv-python',
         'numpy',
@@ -80,23 +118,60 @@ class TrafficVideoSetup:
         Returns:
             True if successful, False otherwise
         """
+        # Never let a caller-supplied name escape the output directory.
+        filename = Path(filename).name
         output_path = self.output_dir / filename
-        
+
+        # Stream into a temporary file and move it into place atomically, so
+        # an interrupted transfer can never leave a corrupt half-video that
+        # later runs would mistake for a valid download. Size is capped and,
+        # where a pin is known, the SHA-256 must match before acceptance.
+        partial_path = output_path.with_name(output_path.name + '.part')
+        expected_hash = self.VIDEO_SHA256.get(filename)
         try:
             print(f"Downloading {filename}...")
-            urllib.request.urlretrieve(url, output_path)
-            
-            # Verify file exists and has content
-            if output_path.exists() and output_path.stat().st_size > 0:
-                print(f"✓ {filename} downloaded successfully")
-                return True
-            else:
-                print(f"✗ Download failed for {filename}")
+            request = urllib.request.Request(
+                url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+            )
+            digest = hashlib.sha256()
+            received = 0
+            with urllib.request.urlopen(request, timeout=120) as response, \
+                    open(partial_path, 'wb') as out_file:
+                while True:
+                    chunk = response.read(1024 * 256)
+                    if not chunk:
+                        break
+                    received += len(chunk)
+                    if received > self.MAX_DOWNLOAD_BYTES:
+                        raise ValueError(
+                            f"download exceeds {self.MAX_DOWNLOAD_BYTES} bytes"
+                        )
+                    digest.update(chunk)
+                    out_file.write(chunk)
+
+            if received == 0:
+                print(f"✗ Download failed for {filename} (empty response)")
                 return False
-                
+            if expected_hash is not None and digest.hexdigest() != expected_hash:
+                print(
+                    f"✗ {filename}: checksum mismatch (got {digest.hexdigest()[:16]}…) — "
+                    "refusing the file; the upstream source may have changed."
+                )
+                return False
+
+            os.replace(partial_path, output_path)
+            print(f"✓ {filename} downloaded successfully")
+            return True
+
         except Exception as e:
             print(f"✗ Error downloading {filename}: {e}")
             return False
+        finally:
+            if partial_path.exists():
+                try:
+                    partial_path.unlink()
+                except OSError:
+                    pass
     
     def download_sample_videos(self):
         """
@@ -260,6 +335,50 @@ class TrafficVideoSetup:
             return False
 
 
+
+
+def is_plausible_video(path) -> bool:
+    """Cheap sanity check that ``path`` holds real video data.
+
+    Rejects missing/empty files, tiny stubs, Git-LFS pointer files (which
+    appear when a repository is cloned without ``git lfs``; ~130 bytes of
+    text starting with ``version https://git-lfs``), and HTML/JSON error
+    pages served with a 200 status.
+    """
+
+    path = Path(path)
+    try:
+        if not path.exists() or path.stat().st_size < 100 * 1024:
+            return False
+        with open(path, 'rb') as handle:
+            head = handle.read(64)
+    except OSError:
+        return False
+    if head.startswith(b'version https://git-lfs'):
+        return False
+    if head.lstrip()[:1] in (b'<', b'{'):
+        return False
+    return True
+
+
+def ensure_video(filename: str, output_dir: str = 'videos'):
+    """Return the path to ``filename``, downloading it if a source is known.
+
+    Existing files are validated first (guarding against truncated downloads
+    and Git-LFS pointer stubs); invalid files are re-downloaded. Returns the
+    path as a string on success, otherwise ``None``.
+    """
+
+    filename = Path(filename).name
+    setup = TrafficVideoSetup(output_dir)
+    target = setup.output_dir / filename
+    if is_plausible_video(target):
+        return str(target)
+
+    for url in TrafficVideoSetup.VIDEO_URLS.get(filename, []):
+        if setup.download_video(url, filename) and is_plausible_video(target):
+            return str(target)
+    return None
 
 
 def print_manual_setup_guide():

@@ -45,7 +45,9 @@ class CameraCounterConfig:
     detection_zone_size: float
     confidence: float = 0.25
     model_path: str | Path = "weights/yolov8n.pt"
-    classes: Optional[Iterable[int]] = None
+    # COCO vehicle classes: car, motorcycle, bus, truck. Passing None would
+    # make YOLO report every class (people, animals, ...) as "vehicles".
+    classes: Optional[Iterable[int]] = (2, 3, 5, 7)
 
 
 class CameraCounter(VehicleCounter):
@@ -99,10 +101,12 @@ class CameraCounter(VehicleCounter):
         cv2.addWeighted(frame, 0.7, overlays, 0.3, 0, overlays)
 
         logger.debug("Running YOLO detection on frame")
+        # Detect on the raw frame, not the annotated overlay, so drawn
+        # rectangles cannot perturb the model's predictions.
         results = self.model.predict(
-            overlays,
+            frame,
             conf=self.config.confidence,
-            classes=self.config.classes,
+            classes=list(self.config.classes) if self.config.classes is not None else None,
             verbose=False,
         )
 

@@ -56,8 +56,18 @@ class RealisticVisualization(VisualizationStrategy):
             2,
         )
         cv2.imshow("Adaptive Traffic - Realistic", combined)
-        cv2.waitKey(1)
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord("q"):
+            raise SystemExit
+        try:
+            if cv2.getWindowProperty("Adaptive Traffic - Realistic", cv2.WND_PROP_VISIBLE) < 1:
+                raise SystemExit
+        except cv2.error:  # pragma: no cover - backend without window properties
+            pass
 
     def close(self) -> None:
         if cv2 is not None:
-            cv2.destroyWindow("Adaptive Traffic - Realistic")
+            try:
+                cv2.destroyWindow("Adaptive Traffic - Realistic")
+            except cv2.error:  # pragma: no cover - window may already be gone
+                pass

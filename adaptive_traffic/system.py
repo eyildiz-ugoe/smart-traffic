@@ -157,7 +157,7 @@ class TrafficSystem:
 
         try:
             self.strategy.run()
-        except KeyboardInterrupt:
-            logger.info("Traffic system interrupted by user")
+        except (KeyboardInterrupt, SystemExit):
+            logger.info("Traffic system stopped by user")
         finally:
             self.strategy.close()
