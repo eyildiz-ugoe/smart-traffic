@@ -267,6 +267,25 @@ fractional detection zones (`ZoneConfig` in `pedestrian_crossing.py`,
 two Urban Tracker sequences. Recalibrate per camera — exactly as
 commercial video-detection systems are zoned once at installation.
 
+**Auto-calibration prototype (`auto_calibrate.py`):** instead of drawing
+zones by hand, watch the intersection and let the traffic explain the
+scene — where vehicles drive is the road, each track's *entry* direction
+names its approach (turning vehicles keep their true origin), and where
+through-traffic repeatedly dwells is the stop line. Self-supervised from
+the existing detector + tracker; no segmentation model required.
+
+```bash
+python auto_calibrate.py videos/sherbrooke_intersection.avi \
+    --out docs/auto_calibration.jpg --compare-defaults \
+    --tracks-cache tracks.json     # cache: re-analysis is instant
+```
+
+On the Sherbrooke footage the learned stop line lands exactly on the real
+one (red dwell cluster below), and the learned North zone tracks the true
+queue lane more tightly than the hand-drawn one:
+
+![Trajectory-based auto-calibration on Sherbrooke](docs/auto_calibration.jpg)
+
 ## Related work
 
 ### Deployed systems with published results
