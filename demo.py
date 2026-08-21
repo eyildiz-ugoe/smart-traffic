@@ -105,6 +105,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--video-road1", type=str, help="Case 2 real mode: video for road 1")
     parser.add_argument("--video-road2", type=str, help="Case 2 real mode: video for road 2")
     parser.add_argument("--fps", type=int, default=30, help="Simulation frame rate")
+    parser.add_argument(
+        "--size",
+        type=int,
+        help="Render size in pixels for the case 3 simulation (default: auto-fit to monitor)",
+    )
     parser.add_argument("--seed", type=int, help="Random seed for reproducible simulations")
     parser.add_argument("--max-frames", type=int, help="Stop after N frames (default: run until 'q')")
     parser.add_argument("--no-display", action="store_true", help="Run headless (no GUI window)")
@@ -168,7 +173,7 @@ def run_case3(args: argparse.Namespace) -> None:
     if args.mode == "simulation":
         from four_way_intersection import FourWaySimulation
 
-        sim = FourWaySimulation(fps=args.fps, seed=args.seed)
+        sim = FourWaySimulation(fps=args.fps, size=args.size, seed=args.seed)
         sim.run(
             max_frames=args.max_frames,
             display_window=not args.no_display,

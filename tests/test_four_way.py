@@ -58,7 +58,6 @@ def test_empty_axis_is_skipped_early_for_waiting_cross_traffic():
     clock.advance(controller.MIN_GREEN + 0.1)
     status = controller.update({"N": 0, "S": 0, "E": 2, "W": 1})
     assert status["phase"] == "YELLOW"
-    assert status["early_switches"] == 1
 
     clock.advance(controller.YELLOW_TIME + 0.05)
     status = controller.update({"N": 0, "S": 0, "E": 2, "W": 1})
@@ -70,6 +69,9 @@ def test_empty_axis_is_skipped_early_for_waiting_cross_traffic():
     assert status["active_axis"] == "EW"
     assert status["phase"] == "GREEN"
     assert status["signals"] == {"N": "RED", "S": "RED", "E": "GREEN", "W": "GREEN"}
+    # Counters advance together at changeover completion.
+    assert status["early_switches"] == 1
+    assert status["total_switches"] == 1
 
 
 def test_max_green_caps_a_busy_axis_when_cross_traffic_waits():
@@ -182,3 +184,30 @@ def test_simulation_runs_headless_with_adaptive_switching():
     # Frame renders without errors and has the expected shape.
     frame = sim.render(sim.controller.status(sim.counts()))
     assert frame.shape == (sim.size, sim.size, 3)
+
+
+@pytest.mark.skipif(cv2 is None or np is None, reason="requires cv2 and numpy")
+def test_render_size_does_not_change_world_behavior():
+    """The window resolution must only affect drawing, never the physics or
+    the controller — a demo on a 4K wall must behave exactly like a laptop."""
+
+    from four_way_intersection import FourWaySimulation
+
+    results = []
+    for size in (480, 1280):
+        sim = FourWaySimulation(fps=30, size=size, seed=23)
+        for _ in range(30 * 60):
+            sim.step(1.0 / 30.0)
+        results.append(
+            (
+                sim.counts(),
+                sim.controller.total_switches,
+                sim.controller.active_axis,
+                [len(app.vehicles) for app in sim.approaches.values()],
+            )
+        )
+        # And it renders at the requested resolution.
+        frame = sim.render(sim.controller.status(sim.counts()))
+        assert frame.shape == (size, size, 3)
+
+    assert results[0] == results[1]

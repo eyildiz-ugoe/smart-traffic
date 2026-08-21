@@ -529,7 +529,7 @@ class SmartTrafficSystem:
         fullscreen_active = fullscreen and display_window
 
         if display_window:
-            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
             target_state = cv2.WINDOW_FULLSCREEN if fullscreen_active else cv2.WINDOW_NORMAL
             cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, target_state)
 
@@ -1104,7 +1104,7 @@ class SimulationTrafficSystem:
         fullscreen_active = fullscreen if display_window else False
 
         if display_window:
-            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
             target_state = cv2.WINDOW_FULLSCREEN if fullscreen_active else cv2.WINDOW_NORMAL
             cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, target_state)
 

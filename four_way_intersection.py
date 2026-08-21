@@ -71,6 +71,7 @@ class FourWayController:
         self._red_start = {"NS": now, "EW": now}
         self.early_switches = 0
         self.total_switches = 0
+        self._pending_early = False
 
     def _elapsed(self) -> float:
         return self._time_func() - self.phase_start
@@ -100,7 +101,7 @@ class FourWayController:
                 if cross_demand > 0:
                     if active_demand == 0:
                         switch = True
-                        self.early_switches += 1
+                        self._pending_early = True
                     elif elapsed >= self.MAX_GREEN:
                         switch = True
                 # Detector-failure failsafe: serve the cross axis after
@@ -120,6 +121,11 @@ class FourWayController:
             if self._elapsed() >= self.ALL_RED_TIME:
                 self.active_axis = cross
                 self.total_switches += 1
+                # Both counters advance at changeover completion, so the
+                # displayed "demand-driven X of Y" ratio is always coherent.
+                if self._pending_early:
+                    self.early_switches += 1
+                    self._pending_early = False
                 self._enter("GREEN")
 
         return self.status(counts)
@@ -150,6 +156,41 @@ class FourWayController:
 # ---------------------------------------------------------------------------
 # Simulation mode
 # ---------------------------------------------------------------------------
+
+#: All world/geometry constants are expressed in this logical coordinate
+#: space; rendering scales them to the actual window size. World behavior
+#: (spawns, queues, controller decisions) is therefore identical on every
+#: monitor resolution.
+LOGICAL_SIZE = 640.0
+
+
+def detect_display_size(default: int = 720) -> int:
+    """Pick a square render size that fits the current monitor.
+
+    Falls back to ``default`` when the screen size cannot be determined
+    (headless runs, unusual platforms).
+    """
+
+    width = height = 0
+    try:  # Windows
+        import ctypes
+
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        width, height = user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+    except Exception:
+        try:  # cross-platform fallback
+            import tkinter
+
+            root = tkinter.Tk()
+            root.withdraw()
+            width, height = root.winfo_screenwidth(), root.winfo_screenheight()
+            root.destroy()
+        except Exception:
+            width = height = 0
+
+    if width > 0 and height > 0:
+        return max(480, min(1400, int(min(width, height) * 0.85)))
+    return default
 
 
 @dataclass(slots=True)
@@ -227,7 +268,7 @@ class FourWaySimulation:
     def __init__(
         self,
         fps: int = 30,
-        size: int = 640,
+        size: Optional[int] = None,
         *,
         seed: Optional[int] = None,
         spawn_rates: Optional[Dict[str, float]] = None,
@@ -242,7 +283,11 @@ class FourWaySimulation:
             ) from _NUMPY_IMPORT_ERROR
 
         self.fps = max(1, fps)
-        self.size = size
+        # Auto-fit the window to the monitor unless a size is forced. The
+        # scale factor only affects rendering; the world itself always runs
+        # in LOGICAL_SIZE coordinates, so behavior is resolution-independent.
+        self.size = size if size is not None else detect_display_size()
+        self.scale = self.size / LOGICAL_SIZE
         self.rng = random.Random(seed)
 
         # Asymmetric defaults make the demo point obvious: the main NS road
@@ -257,12 +302,44 @@ class FourWaySimulation:
         self._sim_time = 0.0
         self.controller = FourWayController(time_func=lambda: self._sim_time)
 
-        # Geometry.
-        self.center = size // 2
-        self.road_half_width = 54
-        self.lane_offset = 27
-        self.stop_offset = self.road_half_width + 10
+        # Geometry, in LOGICAL coordinates (scaled only when drawing).
+        self.center = LOGICAL_SIZE / 2
+        self.road_half_width = 54.0
+        self.lane_offset = 27.0
+        self.stop_offset = self.road_half_width + 10.0
         self._background = self._create_background()
+
+    # -- scaling helpers -----------------------------------------------------
+    def px(self, value: float) -> int:
+        """Convert a logical coordinate/length to window pixels."""
+
+        return int(round(value * self.scale))
+
+    def _font_scale(self, mult: float = 1.0) -> float:
+        return max(0.45, 0.55 * self.scale) * mult
+
+    def _thickness(self, mult: float = 1.0) -> int:
+        return max(1, int(round(2 * self.scale * mult)))
+
+    def _text(
+        self,
+        frame: "np.ndarray",
+        text: str,
+        logical_org: Tuple[float, float],
+        color: Tuple[int, int, int] = (255, 255, 255),
+        mult: float = 1.0,
+    ) -> None:
+        """Draw outlined text at a logical position (readable on any ground)."""
+
+        org = (self.px(logical_org[0]), self.px(logical_org[1]))
+        cv2.putText(
+            frame, text, org, cv2.FONT_HERSHEY_SIMPLEX,
+            self._font_scale(mult), (0, 0, 0), self._thickness(mult) + 2, cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame, text, org, cv2.FONT_HERSHEY_SIMPLEX,
+            self._font_scale(mult), color, self._thickness(mult), cv2.LINE_AA,
+        )
 
     # -- world -------------------------------------------------------------
     def counts(self) -> Dict[str, int]:
@@ -280,57 +357,128 @@ class FourWaySimulation:
 
     # -- rendering -----------------------------------------------------------
     def _create_background(self) -> "np.ndarray":
-        s, c, rw = self.size, self.center, self.road_half_width
+        s = self.size
+        c, rw, so = self.center, self.road_half_width, self.stop_offset
+        px = self.px
         frame = np.full((s, s, 3), 24, dtype=np.uint8)
         road = (66, 66, 66)
-        cv2.rectangle(frame, (c - rw, 0), (c + rw, s), road, -1)
-        cv2.rectangle(frame, (0, c - rw), (s, c + rw), road, -1)
-        # Centre lines.
-        for y in range(0, s, 34):
-            if abs(y - c) > rw + 10:
-                cv2.line(frame, (c, y), (c, min(y + 18, s)), (170, 170, 170), 2)
-        for x in range(0, s, 34):
-            if abs(x - c) > rw + 10:
-                cv2.line(frame, (x, c), (min(x + 18, s), c), (170, 170, 170), 2)
-        # Stop lines.
-        so = self.stop_offset
-        cv2.line(frame, (c - rw, c - so), (c, c - so), (230, 230, 230), 3)  # N
-        cv2.line(frame, (c, c + so), (c + rw, c + so), (230, 230, 230), 3)  # S
-        cv2.line(frame, (c + so, c - rw), (c + so, c), (230, 230, 230), 3)  # E
-        cv2.line(frame, (c - so, c), (c - so, c + rw), (230, 230, 230), 3)  # W
+        cv2.rectangle(frame, (px(c - rw), 0), (px(c + rw), s), road, -1)
+        cv2.rectangle(frame, (0, px(c - rw)), (s, px(c + rw)), road, -1)
+        # Centre lines (dashed), in logical steps so density is identical at
+        # every resolution.
+        dash, gap = 18.0, 16.0
+        pos = 0.0
+        while pos < LOGICAL_SIZE:
+            if abs(pos - c) > rw + 10:
+                cv2.line(
+                    frame,
+                    (px(c), px(pos)),
+                    (px(c), min(px(pos + dash), s)),
+                    (170, 170, 170),
+                    self._thickness(),
+                )
+                cv2.line(
+                    frame,
+                    (px(pos), px(c)),
+                    (min(px(pos + dash), s), px(c)),
+                    (170, 170, 170),
+                    self._thickness(),
+                )
+            pos += dash + gap
+        # Stop lines (one per approach, on the incoming half of each road).
+        stop_th = self._thickness(1.5)
+        cv2.line(frame, (px(c - rw), px(c - so)), (px(c), px(c - so)), (230, 230, 230), stop_th)  # N
+        cv2.line(frame, (px(c), px(c + so)), (px(c + rw), px(c + so)), (230, 230, 230), stop_th)  # S
+        cv2.line(frame, (px(c + so), px(c - rw)), (px(c + so), px(c)), (230, 230, 230), stop_th)  # E
+        cv2.line(frame, (px(c - so), px(c)), (px(c - so), px(c + rw)), (230, 230, 230), stop_th)  # W
         return frame
 
     def _vehicle_rect(self, name: str, vehicle: ApproachVehicle) -> Tuple[int, int, int, int]:
         c, lo, so = self.center, self.lane_offset, self.stop_offset
-        width = 20
-        length = int(vehicle.length)
+        px = self.px
+        width = 20.0
+        length = float(vehicle.length)
         d = vehicle.distance
         if name == "N":  # southbound, drives on the west half, moving down
-            front = int(c - so - d)
-            return (c - lo - width // 2, front - length, width, length)
+            front = c - so - d
+            return (px(c - lo - width / 2), px(front - length), px(width), px(length))
         if name == "S":  # northbound, east half, moving up
-            front = int(c + so + d)
-            return (c + lo - width // 2, front, width, length)
+            front = c + so + d
+            return (px(c + lo - width / 2), px(front), px(width), px(length))
         if name == "E":  # westbound, north half, moving left
-            front = int(c + so + d)
-            return (front, c - lo - width // 2, length, width)
+            front = c + so + d
+            return (px(front), px(c - lo - width / 2), px(length), px(width))
         # W: eastbound, south half, moving right
-        front = int(c - so - d)
-        return (front - length, c + lo - width // 2, length, width)
+        front = c - so - d
+        return (px(front - length), px(c + lo - width / 2), px(length), px(width))
 
-    def _draw_signal_dot(self, frame: "np.ndarray", name: str, signal: str) -> None:
-        c, so = self.center, self.stop_offset
-        color = {"GREEN": (0, 210, 0), "YELLOW": (0, 210, 230)}.get(signal, (0, 0, 220))
-        positions = {
-            "N": (c - self.road_half_width - 18, c - so),
-            "S": (c + self.road_half_width + 18, c + so),
-            "E": (c + so, c + self.road_half_width + 18),
-            "W": (c - so, c - self.road_half_width - 18),
-        }
-        cv2.circle(frame, positions[name], 10, color, -1)
-        cv2.circle(frame, positions[name], 10, (245, 245, 245), 2)
-        label_pos = (positions[name][0] - 6, positions[name][1] + 5)
-        cv2.putText(frame, name, label_pos, cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1)
+    #: Logical top-left corners of the four signal housings. Each sits in
+    #: the corner quadrant beside its approach's stop line, so the four
+    #: housings can never overlap one another or the roads.
+    _HOUSING_W, _HOUSING_H = 24.0, 62.0
+    _SIGNAL_POSITIONS = {
+        "N": (320.0 - 54.0 - 16.0 - 24.0, 320.0 - 64.0 - 62.0),  # NW corner
+        "E": (320.0 + 64.0 + 4.0, 320.0 - 54.0 - 16.0 - 62.0),   # NE corner
+        "S": (320.0 + 54.0 + 16.0, 320.0 + 64.0),                # SE corner
+        "W": (320.0 - 64.0 - 4.0 - 24.0, 320.0 + 54.0 + 16.0),   # SW corner
+    }
+
+    def _draw_signal_housing(self, frame: "np.ndarray", name: str, signal: str) -> None:
+        px = self.px
+        lx, ly = self._SIGNAL_POSITIONS[name]
+        w, h = self._HOUSING_W, self._HOUSING_H
+        cv2.rectangle(
+            frame, (px(lx), px(ly)), (px(lx + w), px(ly + h)), (38, 38, 42), -1
+        )
+        cv2.rectangle(
+            frame, (px(lx), px(ly)), (px(lx + w), px(ly + h)), (200, 200, 200), self._thickness(0.5)
+        )
+        lamp_radius = max(3, px(7.0))
+        lamps = [
+            ("RED", (0, 0, 220), ly + h * 0.20),
+            ("YELLOW", (0, 210, 230), ly + h * 0.50),
+            ("GREEN", (0, 200, 0), ly + h * 0.80),
+        ]
+        for lamp_name, color, lamp_y in lamps:
+            lit = signal == lamp_name
+            cv2.circle(
+                frame,
+                (px(lx + w / 2), px(lamp_y)),
+                lamp_radius,
+                color if lit else (70, 70, 70),
+                -1,
+            )
+        # Approach letter beneath the housing, outlined for contrast.
+        self._text(frame, name, (lx + w / 2 - 6.0, ly + h + 16.0), mult=0.95)
+
+    def _draw_hud(self, frame: "np.ndarray", status: Dict[str, object]) -> None:
+        counts = self.counts()
+        info = [
+            f"Axis: {status['active_axis']} {status['phase']}",
+            "Waiting  N:%d S:%d E:%d W:%d" % (counts["N"], counts["S"], counts["E"], counts["W"]),
+            "Switches: %d (demand-driven: %d)"
+            % (status["total_switches"], status["early_switches"]),
+            "Avg wait  NS: %.1fs  EW: %.1fs"
+            % (
+                (self.approaches["N"].average_wait() + self.approaches["S"].average_wait()) / 2,
+                (self.approaches["E"].average_wait() + self.approaches["W"].average_wait()) / 2,
+            ),
+        ]
+        remaining = status["time_remaining"]
+        if remaining is not None:
+            info.insert(1, f"Phase ends in: {float(remaining):.1f}s")
+
+        # Translucent panel keeps the text readable over any scene content.
+        line_h = 24.0
+        panel_w, panel_h = 264.0, 12.0 + line_h * len(info)
+        overlay = frame.copy()
+        cv2.rectangle(
+            overlay, (self.px(8.0), self.px(8.0)),
+            (self.px(8.0 + panel_w), self.px(8.0 + panel_h)), (20, 20, 20), -1,
+        )
+        cv2.addWeighted(overlay, 0.65, frame, 0.35, 0, frame)
+        for idx, text in enumerate(info):
+            self._text(frame, text, (16.0, 30.0 + idx * line_h))
 
     def render(self, status: Dict[str, object]) -> "np.ndarray":
         frame = self._background.copy()
@@ -344,24 +492,9 @@ class FourWaySimulation:
                 cv2.rectangle(frame, (x, y), (x + w, y + h), (25, 25, 25), 1)
 
         for name in APPROACHES:
-            self._draw_signal_dot(frame, name, signals[name])
+            self._draw_signal_housing(frame, name, signals[name])
 
-        counts = self.counts()
-        info = [
-            f"Axis: {status['active_axis']} {status['phase']}",
-            "Waiting  N:%d S:%d E:%d W:%d" % (counts["N"], counts["S"], counts["E"], counts["W"]),
-            f"Early switches: {status['early_switches']} / {status['total_switches']}",
-            "Avg wait  NS: %.1fs  EW: %.1fs"
-            % (
-                (self.approaches["N"].average_wait() + self.approaches["S"].average_wait()) / 2,
-                (self.approaches["E"].average_wait() + self.approaches["W"].average_wait()) / 2,
-            ),
-        ]
-        remaining = status["time_remaining"]
-        if remaining is not None:
-            info.insert(1, f"Phase ends in: {float(remaining):.1f}s")
-        for idx, text in enumerate(info):
-            cv2.putText(frame, text, (14, 24 + idx * 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
+        self._draw_hud(frame, status)
         return frame
 
     # -- loop ------------------------------------------------------------------
@@ -379,7 +512,10 @@ class FourWaySimulation:
         fullscreen_active = fullscreen and display_window
 
         if display_window:
-            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+            # KEEPRATIO letterboxes instead of stretching when the user
+            # resizes or maximizes the window on any monitor shape.
+            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+            cv2.resizeWindow(window_name, self.size, self.size)
             state = cv2.WINDOW_FULLSCREEN if fullscreen_active else cv2.WINDOW_NORMAL
             cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, state)
 
@@ -558,7 +694,7 @@ class RealFourWayIntersection:
         fullscreen_active = fullscreen and display_window
 
         if display_window:
-            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
             state = cv2.WINDOW_FULLSCREEN if fullscreen_active else cv2.WINDOW_NORMAL
             cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, state)
 

@@ -391,7 +391,7 @@ class PedestrianCrossingSimulation:
         fullscreen_active = fullscreen and display_window
 
         if display_window:
-            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
             state = cv2.WINDOW_FULLSCREEN if fullscreen_active else cv2.WINDOW_NORMAL
             cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, state)
 
@@ -620,7 +620,7 @@ class RealPedestrianCrossing:
         fullscreen_active = fullscreen and display_window
 
         if display_window:
-            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
             state = cv2.WINDOW_FULLSCREEN if fullscreen_active else cv2.WINDOW_NORMAL
             cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, state)
 
