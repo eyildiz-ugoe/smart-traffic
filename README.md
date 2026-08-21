@@ -269,6 +269,51 @@ commercial video-detection systems are zoned once at installation.
 
 ## Related work
 
+### Deployed systems with published results
+
+Camera/sensor-actuated adaptive signals are proven in production:
+
+- **[Surtrac (Pittsburgh, CMU)](https://aaai.org/papers/00434-13594-smart-urban-signal-networks-initial-application-of-the-surtrac-adaptive-traffic-signal-control-system/)** —
+  piloted on 9 intersections from 2012, later ~50: **~26 % travel-time
+  reduction, 41 % less idling, 31 % fewer stops, 21 % lower projected
+  emissions** ([US DOT ITS
+  database](https://www.itskrs.its.dot.gov/2013-b00820)).
+- **[Vienna's intelligent pedestrian signals (TU
+  Graz)](https://www.tugraz.at/en/tu-graz/services/news-stories/media-service/singleview/article/denkende-fussgaengerampeln-neues-system-der-tu-graz-erkennt-kreuzungswunsch-automatisch0/)** —
+  cameras detect waiting pedestrians and crossing intent, replacing push
+  buttons; **21 intersections live since 2018**, second generation
+  [deployed 2024](https://techxplore.com/news/2024-11-vienna-smart-traffic-smarter.html);
+  edge processing, nothing stored — the production counterpart of Case 1.
+- **[VivaCity Smart Junctions (Greater Manchester,
+  UK)](https://vivacitylabs.com/smart-junctions-traffic-signal-control/)** —
+  AI camera sensors controlling live signals since 2020: **~23 %
+  journey-time reduction**, up to 30 % improvement over the incumbent.
+- **[Fraunhofer KI4LSA (Lemgo,
+  Germany)](https://www.fraunhofer.de/en/press/research-news/2022/february-2022/traffic-lights-controlled-using-artificial-intelligence.html)** —
+  first real-world deep-RL signal control: **10–15 % flow improvement**.
+
+### Datasets for night / adverse-weather validation (Phase 2)
+
+- **[AAU RainSnow](https://www.kaggle.com/datasets/aalborguniversity/aau-rainsnow)**
+  (DOI 10.34740/kaggle/dsv/105294) — 22 five-minute videos from 7 Danish
+  intersections, **RGB + thermal pairs**, rain/snow/twilight/night,
+  headlight glare, COCO-format ground truth (2,200 annotated frames).
+  The primary candidate: its videos feed directly into
+  `demo.py --case 3 --mode real --video …` with recalibrated zones, and
+  its annotations allow measured (not eyeballed) accuracy scoring.
+- **[UA-DETRAC](https://arxiv.org/pdf/1511.04136)** — 10 h of Beijing
+  surveillance footage, 1.21 M boxes, **night and rain** subsets
+  (frame sequences; convert with ffmpeg).
+- **[DAWN](https://data.mendeley.com/datasets/766ygrbt8y/3)** — ~1,000
+  annotated vehicle images in **fog/rain/snow/sandstorm**; detector
+  benchmarking only.
+- A first in-house probe: the unmodified detector on street-level night
+  footage found 3–6 vehicles per frame at the default confidence —
+  near/mid-range vehicles reliable, distant ones missed, matching the
+  Phase 2 hardening plan (GPU + larger model + local fine-tuning).
+
+### Comparable research systems
+
 Published evaluations of YOLO-based adaptive signal control report reduced
 idle time and fuel consumption at intersections — see
 [IIETA 2024](https://iieta.org/journals/ts/paper/10.18280/ts.410407),
