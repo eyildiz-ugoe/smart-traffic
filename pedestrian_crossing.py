@@ -92,6 +92,12 @@ class PedestrianSignalController:
     #: A waiting pedestrian's clock survives detection dropouts shorter than
     #: this (occlusion by passing vehicles must not reset the fairness cap).
     PED_ABSENCE_RESET = 3.0
+    #: Wait time already accumulated is *banked* across longer dropouts and
+    #: only forgotten after a sustained absence of this many seconds —
+    #: otherwise a detector flickering absent for just over
+    #: PED_ABSENCE_RESET could zero the fairness clock indefinitely and
+    #: starve the pedestrian under continuous traffic.
+    CARRYOVER_FORGET = 30.0
 
     def __init__(self, time_func: Callable[[], float] | None = None) -> None:
         self._time_func = time_func or time.monotonic
@@ -100,6 +106,8 @@ class PedestrianSignalController:
         self.state_start = now
         self._ped_wait_start: Optional[float] = None
         self._ped_last_seen: Optional[float] = None
+        self._ped_wait_carryover = 0.0
+        self._ped_absent_since: Optional[float] = None
         self.pedestrians_served = 0
         self.total_ped_wait = 0.0
 
@@ -112,9 +120,10 @@ class PedestrianSignalController:
         self.state_start = self._time_func()
 
     def pedestrian_wait_time(self) -> float:
-        if self._ped_wait_start is None:
-            return 0.0
-        return self._time_func() - self._ped_wait_start
+        active = 0.0
+        if self._ped_wait_start is not None:
+            active = self._time_func() - self._ped_wait_start
+        return self._ped_wait_carryover + active
 
     # -- main update -----------------------------------------------------
     def update(
@@ -136,16 +145,36 @@ class PedestrianSignalController:
         if self.state == "CAR_GREEN":
             if pedestrian_waiting:
                 if self._ped_wait_start is None:
+                    # Reappearance: banked wait time is kept unless the
+                    # absence lasted long enough to conclude the original
+                    # pedestrian genuinely left.
+                    if (
+                        self._ped_absent_since is not None
+                        and now - self._ped_absent_since >= self.CARRYOVER_FORGET
+                    ):
+                        self._ped_wait_carryover = 0.0
+                    self._ped_absent_since = None
                     self._ped_wait_start = now
                 self._ped_last_seen = now
-            elif self._ped_wait_start is not None:
-                # Only forget the waiting pedestrian after a sustained
-                # absence — a brief occlusion by passing traffic must not
-                # reset the MAX_PED_WAIT fairness clock.
-                last_seen = self._ped_last_seen if self._ped_last_seen is not None else now
-                if now - last_seen >= self.PED_ABSENCE_RESET:
-                    self._ped_wait_start = None
-                    self._ped_last_seen = None
+            else:
+                if self._ped_wait_start is not None:
+                    # Only pause the clock after a sustained absence — a
+                    # brief occlusion by passing traffic must not reset the
+                    # MAX_PED_WAIT fairness clock. Time already waited is
+                    # banked, not discarded.
+                    last_seen = self._ped_last_seen if self._ped_last_seen is not None else now
+                    if now - last_seen >= self.PED_ABSENCE_RESET:
+                        self._ped_wait_carryover += max(0.0, last_seen - self._ped_wait_start)
+                        self._ped_wait_start = None
+                        self._ped_last_seen = None
+                        self._ped_absent_since = last_seen
+                elif (
+                    self._ped_wait_carryover > 0.0
+                    and self._ped_absent_since is not None
+                    and now - self._ped_absent_since >= self.CARRYOVER_FORGET
+                ):
+                    self._ped_wait_carryover = 0.0
+                    self._ped_absent_since = None
 
             if self._ped_wait_start is not None and self._elapsed() >= self.MIN_CAR_GREEN:
                 waited = self.pedestrian_wait_time()
@@ -169,11 +198,12 @@ class PedestrianSignalController:
                     and elapsed < self.ALL_RED_TIME + self.MAX_CLEARANCE_EXTENSION
                 )
                 if not still_blocked:
-                    if self._ped_wait_start is not None:
-                        self.total_ped_wait += now - self._ped_wait_start
+                    self.total_ped_wait += self.pedestrian_wait_time()
                     self.pedestrians_served += 1
                     self._ped_wait_start = None
                     self._ped_last_seen = None
+                    self._ped_wait_carryover = 0.0
+                    self._ped_absent_since = None
                     self._enter("WALK")
         elif self.state == "WALK":
             if self._elapsed() >= self.WALK_TIME:

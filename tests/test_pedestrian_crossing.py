@@ -186,6 +186,53 @@ def test_brief_pedestrian_occlusion_does_not_reset_wait_clock():
     assert clock.current == pytest.approx(controller.MAX_PED_WAIT, abs=1.0)
 
 
+def test_periodic_flicker_cannot_starve_the_pedestrian():
+    """Fuzzer-found starvation: detection absent for just over
+    PED_ABSENCE_RESET in a periodic pattern used to wipe the fairness clock
+    every cycle; with constant dilemma-zone traffic the pedestrian was never
+    served. Banked carryover now accumulates across the gaps."""
+
+    clock, controller = make_controller()
+
+    served_at = None
+    t = 0.0
+    while t < 300.0:
+        cycle_pos = t % 6.0
+        waiting = cycle_pos < 2.9  # present 2.9s, absent ~3.1s, repeating
+        status = controller.update(
+            pedestrian_waiting=waiting, vehicle_in_dilemma_zone=True, vehicle_count=3
+        )
+        if status["state"] == "CAR_YELLOW":
+            served_at = t
+            break
+        clock.advance(0.05)
+        t += 0.05
+
+    assert served_at is not None, "pedestrian starved despite MAX_PED_WAIT"
+    # Cumulative presence reaches MAX_PED_WAIT after ~15-16 cycles (~95s);
+    # generous upper bound well below the old infinite starvation.
+    assert served_at < 150.0
+
+
+def test_carryover_is_forgotten_after_a_genuine_departure():
+    clock, controller = make_controller()
+
+    # Pedestrian waits 20s, then leaves for good (> CARRYOVER_FORGET).
+    controller.update(pedestrian_waiting=True, vehicle_in_dilemma_zone=True, vehicle_count=3)
+    clock.advance(20.0)
+    controller.update(pedestrian_waiting=True, vehicle_in_dilemma_zone=True, vehicle_count=3)
+    clock.advance(controller.PED_ABSENCE_RESET + 0.1)
+    controller.update(pedestrian_waiting=False, vehicle_in_dilemma_zone=True, vehicle_count=3)
+    clock.advance(controller.CARRYOVER_FORGET + 1.0)
+    controller.update(pedestrian_waiting=False, vehicle_in_dilemma_zone=True, vehicle_count=3)
+
+    # A brand-new pedestrian starts from zero.
+    status = controller.update(
+        pedestrian_waiting=True, vehicle_in_dilemma_zone=True, vehicle_count=3
+    )
+    assert status["ped_wait_time"] == pytest.approx(0.0, abs=0.1)
+
+
 def test_sustained_pedestrian_absence_clears_the_request():
     clock, controller = make_controller()
 

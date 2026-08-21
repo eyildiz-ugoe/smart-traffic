@@ -116,6 +116,28 @@ def test_download_video_rejects_checksum_mismatch(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def test_tracker_nms_conf_feeds_bytetracks_low_score_tier():
+    """The NMS conf passed to model.track must not exceed the tracker's
+    track_low_thresh, or ByteTrack's occlusion-recovery tier receives
+    nothing and track IDs fragment (audit finding: one parked car split
+    into 5+ IDs)."""
+
+    from smart_traffic_system import VehicleDetector
+
+    config_text = Path(VehicleDetector.TRACKER_CONFIG).read_text()
+    values = {}
+    for line in config_text.splitlines():
+        if ":" in line and not line.strip().startswith("#"):
+            key, _, value = line.partition(":")
+            try:
+                values[key.strip()] = float(value.strip())
+            except ValueError:
+                pass
+
+    assert VehicleDetector.TRACKER_NMS_CONF <= values["track_low_thresh"]
+    assert values["track_low_thresh"] < values["track_high_thresh"]
+
+
 def test_parser_covers_all_cases_and_modes():
     parser = demo.build_parser()
     args = parser.parse_args(["--case", "3", "--mode", "real", "--max-frames", "10"])

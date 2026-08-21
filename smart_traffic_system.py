@@ -265,6 +265,14 @@ class VehicleDetector:
     #: (resolved relative to this file so the working directory is irrelevant).
     TRACKER_CONFIG = str(Path(__file__).resolve().parent / "trackers" / "bytetrack_traffic.yaml")
 
+    #: NMS confidence floor for the *tracker* call. This must sit at the
+    #: tracker config's ``track_low_thresh`` — passing the display threshold
+    #: here would starve ByteTrack's low-score association pass (its
+    #: occlusion-recovery mechanism) and fragment track IDs whenever a
+    #: vehicle's confidence dips. Detections below ``config.confidence``
+    #: are still filtered out of the returned list afterwards.
+    TRACKER_NMS_CONF = 0.1
+
     def _results_to_detections(self, results) -> List[VehicleDetection]:
         detections: List[VehicleDetection] = []
 
@@ -317,6 +325,14 @@ class VehicleDetector:
         Best-effort: the tracker objects only exist after the first
         ``track_vehicles`` call, and the internal API may vary between
         ultralytics releases.
+
+        Caution: ultralytics' ``reset()`` zeroes a *process-global* track-ID
+        counter (``BaseTrack._count``), so if multiple VehicleDetector
+        instances ever track concurrently in one process, resetting one
+        recycles IDs for all of them. Each real-mode demo currently owns
+        exactly one detector, and MotionFilter state is always cleared via
+        ``handle_discontinuity`` alongside this call, so recycled IDs can
+        never collide with stale dwell state.
         """
 
         predictor = getattr(self.model, "predictor", None)
@@ -339,7 +355,7 @@ class VehicleDetector:
             frame,
             persist=True,
             verbose=False,
-            conf=self.config.confidence,
+            conf=min(self.TRACKER_NMS_CONF, self.config.confidence),
             iou=self.config.iou,
             device=self._device,
             tracker=self.TRACKER_CONFIG,

@@ -148,6 +148,53 @@ def test_orphans_expire_after_the_adoption_window():
     assert not mf.is_parked(5, 12.0)  # fresh track, no inherited history
 
 
+def test_mid_stream_id_churn_bridged_for_parked_candidates():
+    """Real trackers churn IDs on stationary cars (measured gaps up to ~90s
+    on the bundled footage). A pruned never-moved track's history must be
+    re-adopted by the new ID at the same position."""
+
+    mf = make_filter(never_moved_grace=60.0, orphan_lifetime=120.0)
+
+    mf.observe(1, (500.0, 200.0), 0.0)
+    mf.observe(1, (500.0, 200.0), 40.0)
+    mf.prune(50.0)  # track 1 unseen for 10s > forget_after -> orphaned
+
+    # 30s later the tracker re-acquires the same car as ID 42.
+    mf.observe(42, (501.0, 201.0), 80.0)
+    assert mf.is_parked(42, 80.0)  # 80s since first_seen=0 >= 60s grace
+
+
+def test_adoption_picks_the_nearest_orphan():
+    """Two parked cars closer than move_radius must not swap histories."""
+
+    mf = make_filter(move_radius=12.0)
+
+    mf.observe(1, (100.0, 100.0), 0.0)   # car A
+    mf.observe(2, (108.0, 100.0), 0.0)   # car B, 8px away
+    mf.handle_discontinuity(10.0)
+
+    # New detection lands 1px from B (9px from A): must adopt B's state.
+    mf.observe(7, (107.0, 100.0), 10.5)
+    state = mf._tracks[7]
+    assert state.anchor == (108.0, 100.0)
+
+
+def test_chained_discontinuities_keep_unconsumed_orphans():
+    """A second seam before an orphan is re-adopted must not discard it."""
+
+    mf = make_filter(never_moved_grace=60.0)
+
+    mf.observe(1, (400.0, 300.0), 0.0)
+    mf.observe(1, (400.0, 300.0), 40.0)
+    mf.handle_discontinuity(40.0)
+    # Second seam immediately after, before any re-detection.
+    mf.handle_discontinuity(41.0)
+
+    mf.observe(9, (400.0, 300.0), 42.0)
+    mf.observe(9, (400.0, 300.0), 61.0)
+    assert mf.is_parked(9, 61.0)  # history survived both seams
+
+
 def test_rejects_invalid_configuration():
     with pytest.raises(ValueError):
         MotionFilter(move_radius=0.0)
