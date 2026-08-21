@@ -74,6 +74,21 @@ Two crossing roads, four approaches (N/S/E/W), standard two-phase plan
 
 ![Case 3 adaptive plan on the Sherbrooke sequence](docs/case3_adaptive_plan.jpg)
 
+### Parked-car immunity (real modes)
+
+A single frame cannot distinguish a parked car from one queued at a red
+light — both are stationary. Real modes therefore run YOLOv8's ByteTrack
+tracker (`trackers/bytetrack_traffic.yaml`, tuned for distant traffic
+cameras) and a dwell-time filter (`motion_filter.py`): a vehicle that has
+never been seen moving, or has been stationary far longer than any signal
+cycle, is tagged **PARKED** on screen and excluded from demand counts —
+and starts counting again the moment it moves. Queued vehicles are safe:
+queue creep resets the dwell clock, and cars that drove into view keep
+their full dwell budget. Pedestrians are never filtered — a person
+standing at the crossing is exactly the demand Case 1 serves.
+
+![Parked cars excluded from demand on the Sherbrooke sequence](docs/case3_parked_immunity.jpg)
+
 ## 🎥 Demo videos
 
 Real-mode footage lives in `videos/` (shipped via Git LFS; `demo.py`

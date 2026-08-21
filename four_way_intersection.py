@@ -654,9 +654,14 @@ class RealFourWayIntersection:
             raise FileNotFoundError(f"Unable to open video: {self.video_path}")
         self.fps = self.capture.get(cv2.CAP_PROP_FPS) or 30.0
 
+        from motion_filter import MotionFilter
         from pedestrian_crossing import validate_fractional_rect
 
         self.detector = VehicleDetector(detector_config or DetectorConfig())
+        # Parked-car immunity: vehicles are tracked across frames, and a
+        # vehicle stationary far longer than any signal cycle (or never seen
+        # moving at all) stops counting as demand until it moves again.
+        self.motion_filter = MotionFilter()
         self.zones = dict(zones or DEFAULT_ZONES)
         missing = set(APPROACHES) - set(self.zones)
         if missing:
@@ -686,13 +691,27 @@ class RealFourWayIntersection:
         return smoothed
 
     def process_frame(self, frame: "np.ndarray") -> Tuple["np.ndarray", Dict[str, object]]:
-        detections = self.detector.detect_vehicles(frame)
+        detections = self.detector.track_vehicles(frame)
+        now = self._frame_index / self.fps
+
+        # Classify each tracked vehicle as active demand or parked. Untracked
+        # detections (no ID yet) count as demand — fail toward serving them.
+        self.motion_filter.prune(now)
+        active, parked = [], []
+        for det in detections:
+            if det.track_id is None:
+                active.append(det)
+                continue
+            self.motion_filter.observe(det.track_id, det.center, now)
+            if self.motion_filter.is_parked(det.track_id, now):
+                parked.append(det)
+            else:
+                active.append(det)
 
         raw_counts = {name: 0 for name in APPROACHES}
         zone_px = {name: self._zone_pixels(frame.shape, name) for name in APPROACHES}
-        for det in detections:
-            x, y, w, h = det.bbox
-            cx, cy = x + w / 2.0, y + h / 2.0
+        for det in active:
+            cx, cy = det.center
             for name, (zx, zy, zw, zh) in zone_px.items():
                 if zx <= cx <= zx + zw and zy <= cy <= zy + zh:
                     raw_counts[name] += 1
@@ -701,23 +720,33 @@ class RealFourWayIntersection:
         counts = self._smoothed_counts(raw_counts)
         self._frame_index += 1
         status = self.controller.update(counts)
-        annotated = self._annotate(frame, status, detections, zone_px, counts)
+        annotated = self._annotate(frame, status, active, parked, zone_px, counts)
+        status = dict(status)
+        status["parked_ignored"] = len(parked)
         return annotated, status
 
     def _annotate(
         self,
         frame: "np.ndarray",
         status: Dict[str, object],
-        detections,
+        active,
+        parked,
         zone_px: Dict[str, Tuple[int, int, int, int]],
         counts: Dict[str, int],
     ) -> "np.ndarray":
         out = frame.copy()
         signals: Dict[str, str] = status["signals"]  # type: ignore[assignment]
 
-        for det in detections:
+        for det in active:
             x, y, w, h = det.bbox
             cv2.rectangle(out, (x, y), (x + w, y + h), (80, 255, 120), 2)
+        for det in parked:
+            x, y, w, h = det.bbox
+            cv2.rectangle(out, (x, y), (x + w, y + h), (140, 140, 140), 2)
+            cv2.putText(
+                out, "PARKED", (x, max(12, y - 6)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (140, 140, 140), 2,
+            )
 
         for name, (zx, zy, zw, zh) in zone_px.items():
             signal = signals[name]
@@ -733,11 +762,12 @@ class RealFourWayIntersection:
                 2,
             )
 
-        cv2.rectangle(out, (14, 14), (400, 96), (40, 40, 40), -1)
+        cv2.rectangle(out, (14, 14), (400, 120), (40, 40, 40), -1)
         lines = [
             "SHADOW MODE - adaptive plan",
             f"{AXIS_NAMES[str(status['active_axis'])]} road: {status['phase']}",
             f"Switches: {status['total_switches']} (demand-driven: {status['early_switches']})",
+            f"Parked cars ignored: {len(parked)}",
         ]
         for idx, text in enumerate(lines):
             cv2.putText(out, text, (24, 40 + idx * 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)

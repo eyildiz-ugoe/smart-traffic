@@ -1,0 +1,13 @@
+# ByteTrack configuration tuned for fixed traffic cameras.
+#
+# The stock ultralytics thresholds (new_track_thresh 0.6) are meant for
+# close-range footage; distant vehicles on surveillance cameras often score
+# 0.25-0.5 and would never receive a track ID. Lowered thresholds let every
+# counted detection participate in the dwell-time (parked-car) filter.
+tracker_type: bytetrack
+track_high_thresh: 0.25
+track_low_thresh: 0.1
+new_track_thresh: 0.25
+track_buffer: 60
+match_thresh: 0.8
+fuse_score: True

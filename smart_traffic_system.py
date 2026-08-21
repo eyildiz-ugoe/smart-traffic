@@ -81,6 +81,14 @@ class VehicleDetection:
     bbox: Tuple[int, int, int, int]
     confidence: float
     class_id: int
+    #: Persistent tracker ID (from VehicleDetector.track_vehicles); None when
+    #: plain per-frame detection was used or the tracker had no match.
+    track_id: Optional[int] = None
+
+    @property
+    def center(self) -> Tuple[float, float]:
+        x, y, w, h = self.bbox
+        return (x + w / 2.0, y + h / 2.0)
 
     @property
     def bottom_edge(self) -> int:
@@ -253,23 +261,22 @@ class VehicleDetector:
         self.model = YOLO(str(model_path))
         self.model.fuse()  # type: ignore[no-untyped-call]
 
-    def detect_vehicles(self, frame: np.ndarray) -> List[VehicleDetection]:
-        """Detect vehicles on a frame using YOLOv8."""
+    #: Tracker configuration tuned for distant traffic-camera detections
+    #: (resolved relative to this file so the working directory is irrelevant).
+    TRACKER_CONFIG = str(Path(__file__).resolve().parent / "trackers" / "bytetrack_traffic.yaml")
 
-        results = self.model(
-            frame,
-            verbose=False,
-            conf=self.config.confidence,
-            iou=self.config.iou,
-            device=self._device,
-        )[0]
-
+    def _results_to_detections(self, results) -> List[VehicleDetection]:
         detections: List[VehicleDetection] = []
 
         if not hasattr(results, "boxes") or results.boxes is None:  # pragma: no cover - defensive
             return detections
 
-        for cls, conf, xyxy in zip(results.boxes.cls, results.boxes.conf, results.boxes.xyxy):
+        ids = getattr(results.boxes, "id", None)
+        id_list = ids.int().tolist() if ids is not None else [None] * len(results.boxes)
+
+        for cls, conf, xyxy, track_id in zip(
+            results.boxes.cls, results.boxes.conf, results.boxes.xyxy, id_list
+        ):
             if int(cls) not in self._target_classes:
                 continue
             if float(conf) < self.config.confidence:
@@ -281,6 +288,7 @@ class VehicleDetector:
                     bbox=(x1, y1, x2 - x1, y2 - y1),
                     confidence=float(conf),
                     class_id=int(cls),
+                    track_id=int(track_id) if track_id is not None else None,
                 )
             )
 
@@ -290,6 +298,37 @@ class VehicleDetector:
             detections = detections[: self.config.max_detections]
 
         return detections
+
+    def detect_vehicles(self, frame: np.ndarray) -> List[VehicleDetection]:
+        """Detect vehicles on a frame using YOLOv8."""
+
+        results = self.model(
+            frame,
+            verbose=False,
+            conf=self.config.confidence,
+            iou=self.config.iou,
+            device=self._device,
+        )[0]
+        return self._results_to_detections(results)
+
+    def track_vehicles(self, frame: np.ndarray) -> List[VehicleDetection]:
+        """Detect vehicles with persistent tracker IDs (ByteTrack).
+
+        IDs are stable across frames for the lifetime of this detector
+        instance, enabling motion-history logic such as the parked-car
+        dwell-time filter.
+        """
+
+        results = self.model.track(
+            frame,
+            persist=True,
+            verbose=False,
+            conf=self.config.confidence,
+            iou=self.config.iou,
+            device=self._device,
+            tracker=self.TRACKER_CONFIG,
+        )[0]
+        return self._results_to_detections(results)
 
 
 class VehicleQueueAnalyzer:

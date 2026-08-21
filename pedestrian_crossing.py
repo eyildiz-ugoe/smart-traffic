@@ -522,10 +522,17 @@ class RealPedestrianCrossing:
             raise FileNotFoundError(f"Unable to open video: {self.video_path}")
         self.fps = self.capture.get(cv2.CAP_PROP_FPS) or 30.0
 
+        from motion_filter import MotionFilter
+
         config = detector_config or DetectorConfig(
             classes=[PERSON_CLASS_ID, *VEHICLE_CLASS_IDS]
         )
         self.detector = VehicleDetector(config)
+        # Parked-car immunity (vehicles only): a car stationary far longer
+        # than any signal cycle stops holding back the pedestrian phase.
+        # Pedestrians are never filtered — someone standing still at the
+        # crossing is exactly the demand this controller serves.
+        self.motion_filter = MotionFilter()
         self.zones = zones or ZoneConfig()
 
         self._frame_index = 0
@@ -543,14 +550,29 @@ class RealPedestrianCrossing:
         return zx <= cx <= zx + zw and zy <= cy <= zy + zh
 
     def process_frame(self, frame: "np.ndarray") -> Tuple["np.ndarray", Dict[str, object]]:
-        detections = self.detector.detect_vehicles(frame)
+        detections = self.detector.track_vehicles(frame)
         persons = [d for d in detections if d.class_id == PERSON_CLASS_ID]
         vehicles = [d for d in detections if d.class_id != PERSON_CLASS_ID]
+
+        # Parked-car filter: only vehicles with genuine motion history count
+        # as traffic. Untracked detections count as demand (fail safe).
+        now = self._frame_index / self.fps
+        self.motion_filter.prune(now)
+        moving_vehicles, parked_vehicles = [], []
+        for det in vehicles:
+            if det.track_id is None:
+                moving_vehicles.append(det)
+                continue
+            self.motion_filter.observe(det.track_id, det.center, now)
+            if self.motion_filter.is_parked(det.track_id, now):
+                parked_vehicles.append(det)
+            else:
+                moving_vehicles.append(det)
 
         veh_zone = self.zones.to_pixels(frame.shape, "vehicle_zone")
         ped_zone = self.zones.to_pixels(frame.shape, "pedestrian_zone")
 
-        vehicles_in_zone = [d for d in vehicles if self._center_in_zone(d, veh_zone)]
+        vehicles_in_zone = [d for d in moving_vehicles if self._center_in_zone(d, veh_zone)]
         persons_in_zone = [d for d in persons if self._center_in_zone(d, ped_zone)]
 
         ped_waiting = self._ped_presence.update(bool(persons_in_zone))
@@ -564,12 +586,13 @@ class RealPedestrianCrossing:
         )
 
         annotated = self._annotate(
-            frame, status, vehicles, persons, veh_zone, ped_zone,
+            frame, status, moving_vehicles, parked_vehicles, persons, veh_zone, ped_zone,
             len(vehicles_in_zone), len(persons_in_zone),
         )
         status = dict(status)
         status["vehicles_in_zone"] = len(vehicles_in_zone)
         status["persons_in_zone"] = len(persons_in_zone)
+        status["parked_ignored"] = len(parked_vehicles)
         return annotated, status
 
     def _annotate(
@@ -577,6 +600,7 @@ class RealPedestrianCrossing:
         frame: "np.ndarray",
         status: Dict[str, object],
         vehicles,
+        parked_vehicles,
         persons,
         veh_zone: Tuple[int, int, int, int],
         ped_zone: Tuple[int, int, int, int],
@@ -596,6 +620,13 @@ class RealPedestrianCrossing:
         for det in vehicles:
             x, y, w, h = det.bbox
             cv2.rectangle(out, (x, y), (x + w, y + h), (80, 255, 120), 2)
+        for det in parked_vehicles:
+            x, y, w, h = det.bbox
+            cv2.rectangle(out, (x, y), (x + w, y + h), (140, 140, 140), 2)
+            cv2.putText(
+                out, "PARKED", (x, max(12, y - 6)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (140, 140, 140), 2,
+            )
         for det in persons:
             x, y, w, h = det.bbox
             cv2.rectangle(out, (x, y), (x + w, y + h), (0, 200, 255), 2)
@@ -603,12 +634,13 @@ class RealPedestrianCrossing:
         out = draw_traffic_light(out, str(status["car_signal"]), "top-right")
         ped_signal = str(status["ped_signal"])
         color = {"WALK": (0, 220, 0), "CLEAR": (0, 200, 255)}.get(ped_signal, (0, 0, 230))
-        cv2.rectangle(out, (20, 20), (250, 118), (40, 40, 40), -1)
+        cv2.rectangle(out, (20, 20), (270, 140), (40, 40, 40), -1)
         lines = [
             ("SHADOW MODE", (255, 255, 255)),
             (f"Ped signal: {ped_signal}", color),
             (f"Cars in zone: {vehicles_in_zone}", (255, 255, 255)),
             (f"Peds in zone: {persons_in_zone}", (255, 255, 255)),
+            (f"Parked ignored: {len(parked_vehicles)}", (140, 140, 140)),
         ]
         for idx, (text, col) in enumerate(lines):
             cv2.putText(out, text, (30, 44 + idx * 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, col, 2)
