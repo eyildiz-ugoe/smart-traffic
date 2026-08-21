@@ -147,6 +147,31 @@ def test_parser_covers_all_cases_and_modes():
     assert set(demo.CASES) == {1, 2, 3}
 
 
+def test_load_zones_accepts_calibrator_output_and_plain_dicts(tmp_path):
+    import json
+
+    calibrator = tmp_path / "learned.json"
+    calibrator.write_text(json.dumps({
+        "video": "x.avi",
+        "zones": {"N": [0.1, 0.2, 0.3, 0.2], "E": [0.5, 0.3, 0.4, 0.2]},
+    }))
+    zones = demo._load_zones(str(calibrator))
+    assert zones == {"N": (0.1, 0.2, 0.3, 0.2), "E": (0.5, 0.3, 0.4, 0.2)}
+
+    plain = tmp_path / "plain.json"
+    plain.write_text(json.dumps({"W": [0.0, 0.4, 0.3, 0.25]}))
+    assert demo._load_zones(str(plain)) == {"W": (0.0, 0.4, 0.3, 0.25)}
+
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"zones": {"N": ["x", 1, 2, 3]}}))
+    with pytest.raises(SystemExit):
+        demo._load_zones(str(bad))
+    empty = tmp_path / "empty.json"
+    empty.write_text(json.dumps({"zones": {}}))
+    with pytest.raises(SystemExit):
+        demo._load_zones(str(empty))
+
+
 def test_main_dispatches_to_selected_case(monkeypatch):
     called = {}
     monkeypatch.setattr(demo, "run_case1", lambda args: called.setdefault("case", 1))

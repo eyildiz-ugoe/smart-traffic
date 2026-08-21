@@ -102,6 +102,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Synthetic traffic or prerecorded video with YOLO detection",
     )
     parser.add_argument("--video", type=str, help="Video override for real mode (cases 1 and 3)")
+    parser.add_argument(
+        "--zones-from",
+        type=str,
+        help="Case 3 real mode: JSON with learned detection zones "
+             "(the --json-out file written by auto_calibrate.py, or a plain "
+             '{"N": [x, y, w, h], ...} mapping of fractional rectangles)',
+    )
     parser.add_argument("--video-road1", type=str, help="Case 2 real mode: video for road 1")
     parser.add_argument("--video-road2", type=str, help="Case 2 real mode: video for road 2")
     parser.add_argument("--fps", type=int, default=30, help="Simulation frame rate")
@@ -169,6 +176,21 @@ def run_case2(args: argparse.Namespace) -> None:
         )
 
 
+def _load_zones(path: str) -> dict:
+    """Read a zones mapping from auto_calibrate.py output or a plain dict."""
+
+    import json
+
+    payload = json.loads(Path(path).read_text())
+    zones = payload.get("zones", payload) if isinstance(payload, dict) else None
+    if not isinstance(zones, dict) or not zones:
+        raise SystemExit(f"{path}: expected a JSON object with a 'zones' mapping")
+    try:
+        return {name: tuple(float(v) for v in rect) for name, rect in zones.items()}
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"{path}: malformed zone rectangle ({exc})")
+
+
 def run_case3(args: argparse.Namespace) -> None:
     if args.mode == "simulation":
         from four_way_intersection import FourWaySimulation
@@ -183,7 +205,8 @@ def run_case3(args: argparse.Namespace) -> None:
         from four_way_intersection import RealFourWayIntersection
 
         video = _ensure_case_video(3, args.video)
-        demo = RealFourWayIntersection(video)
+        zones = _load_zones(args.zones_from) if args.zones_from else None
+        demo = RealFourWayIntersection(video, zones=zones)
         demo.run(
             max_frames=args.max_frames,
             display_window=not args.no_display,

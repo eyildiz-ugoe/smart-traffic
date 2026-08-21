@@ -275,10 +275,20 @@ through-traffic repeatedly dwells is the stop line. Self-supervised from
 the existing detector + tracker; no segmentation model required.
 
 ```bash
+# Learn zones from traffic (tracks are cached: re-analysis is instant)
 python auto_calibrate.py videos/sherbrooke_intersection.avi \
     --out docs/auto_calibration.jpg --compare-defaults \
-    --tracks-cache tracks.json     # cache: re-analysis is instant
+    --tracks-cache tracks.json --json-out learned_zones.json
+
+# Run the shadow demo directly on the learned zones
+python demo.py --case 3 --mode real --zones-from learned_zones.json
 ```
+
+Learned zone sets may be partial: if auto-calibration proves an approach
+is not visible from a camera (Sherbrooke has no southern approach in
+view), that approach simply never reports demand — and the controller's
+detector-failure recall still guarantees it would be served if it
+existed.
 
 On the Sherbrooke footage the learned stop line lands exactly on the real
 one (red dwell cluster below), and the learned North zone tracks the true
@@ -330,6 +340,30 @@ Camera/sensor-actuated adaptive signals are proven in production:
   footage found 3–6 vehicles per frame at the default confidence —
   near/mid-range vehicles reliable, distant ones missed, matching the
   Phase 2 hardening plan (GPU + larger model + local fine-tuning).
+
+### Further crossing / intersection datasets for system testing
+
+- **[MIT Traffic](https://mmlab.ie.cuhk.edu.hk/datasets/mit_traffic/index.html)** —
+  90 minutes of a single stationary camera over a signalized street
+  crossing (20 clips, 720×480), with labeled pedestrian ground truth on
+  sampled frames; direct download. Good long-duration input for both the
+  shadow demos and `auto_calibrate.py` (many full signal cycles).
+- **[Ko-PER intersection dataset](https://www.uni-ulm.de/in/mrm/forschung/datensaetze.html)**
+  ([IEEE paper](https://ieeexplore.ieee.org/abstract/document/6957976/)) —
+  a public German intersection instrumented with 8 cameras and 14
+  laserscanners; pedestrians, bicyclists, cars, trucks with reference
+  trajectories. Multi-camera views of one crossing — useful for zone
+  calibration at different perspectives.
+- **[inD](https://levelxdata.com/ind-dataset/)**
+  ([paper](https://arxiv.org/abs/1911.07602)) — 11,500+ naturalistic road
+  user trajectories (incl. 5,000+ pedestrians/cyclists) at four German
+  intersections, 25 Hz, <10 cm accuracy; free for academic use. No video
+  needed: the trajectories can drive our controllers **directly** as
+  recorded demand profiles — the ideal input for the Phase 3
+  engineering-grade KPI evaluation.
+- **[MTID — Multi-view Traffic Intersection Dataset](https://ieeexplore.ieee.org/document/9294694/)** —
+  drone + infrastructure camera views of the same Aalborg intersection
+  (from the AAU group behind RainSnow), for cross-view validation.
 
 ### Comparable research systems
 

@@ -662,10 +662,16 @@ class RealFourWayIntersection:
         # vehicle stationary far longer than any signal cycle (or never seen
         # moving at all) stops counting as demand until it moves again.
         self.motion_filter = MotionFilter()
+        # A partial zone set is valid: an approach that is not visible from
+        # this camera (auto-calibration may prove there is none) simply never
+        # reports demand, and the controller's MAX_RED recall still
+        # guarantees it would be served if it existed.
         self.zones = dict(zones or DEFAULT_ZONES)
-        missing = set(APPROACHES) - set(self.zones)
-        if missing:
-            raise ValueError(f"zones must cover all approaches; missing {sorted(missing)}")
+        unknown = set(self.zones) - set(APPROACHES)
+        if unknown:
+            raise ValueError(f"unknown approach names in zones: {sorted(unknown)}")
+        if not self.zones:
+            raise ValueError("zones must cover at least one approach")
         for name, rect in self.zones.items():
             validate_fractional_rect(f"zone {name}", rect)
 
@@ -723,7 +729,7 @@ class RealFourWayIntersection:
                 active.append(det)
 
         raw_counts = {name: 0 for name in APPROACHES}
-        zone_px = {name: self._zone_pixels(frame.shape, name) for name in APPROACHES}
+        zone_px = {name: self._zone_pixels(frame.shape, name) for name in self.zones}
         for det in active:
             cx, cy = det.center
             for name, (zx, zy, zw, zh) in zone_px.items():
