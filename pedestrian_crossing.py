@@ -67,7 +67,14 @@ class PedestrianSignalController:
 
     MIN_CAR_GREEN = 6.0
     YELLOW_TIME = 3.0
-    ALL_RED_TIME = 2.0
+    #: Sized so a vehicle committed at the far edge of the dilemma zone
+    #: still clears the crosswalk before WALK, even at the defensive
+    #: minimum speed: (dilemma 90 + crosswalk 58 + car length 70) / 40 px/s
+    #: = 5.45 s <= YELLOW_TIME + ALL_RED_TIME = 5.5 s. This is what makes
+    #: the MAX_PED_WAIT override safe: the fairness cap may start the
+    #: yellow while a car is in the dilemma zone, but that car is fully
+    #: protected by the yellow + all-red interval.
+    ALL_RED_TIME = 2.5
     WALK_TIME = 8.0
     PED_CLEARANCE_TIME = 4.0
     #: A pedestrian is never left waiting longer than this, even under

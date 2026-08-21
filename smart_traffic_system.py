@@ -322,8 +322,9 @@ class VehicleQueueAnalyzer:
         self, frame_shape: Tuple[int, int, int], detections: Sequence[VehicleDetection]
     ) -> QueueMetrics:
         sorted_detections = self.sorter.sort(detections)
-        pressure = self._calculate_pressure(frame_shape, sorted_detections)
 
+        # Threshold flags consider every detection (a vehicle past the line
+        # still matters for exit-zone occupancy).
         approach_line, exit_line, stopline_occupied, exit_zone_active, leading_edge = (
             self._calculate_thresholds(frame_shape, sorted_detections)
         )
@@ -344,15 +345,18 @@ class VehicleQueueAnalyzer:
                 # If left_edge > approach_line, the vehicle has fully crossed the line.
                 if det.left_edge > approach_line:
                     is_passed = True
-            
+
             if not is_passed:
                 relevant_detections.append(det)
 
+        # count, pressure, and sorted_detections all describe the same set:
+        # the queued vehicles, in priority order. Passed/clearing vehicles
+        # are excluded so len(sorted_detections) == count always holds.
         pressure = self._calculate_pressure(frame_shape, relevant_detections)
         count, class_breakdown = self.counter.summarize(relevant_detections)
         return QueueMetrics(
             count=count,
-            sorted_detections=list(sorted_detections),
+            sorted_detections=list(relevant_detections),
             pressure=pressure,
             class_breakdown=class_breakdown,
             approach_line=approach_line,

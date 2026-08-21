@@ -63,7 +63,13 @@ def test_controller_switches_after_green_and_yellow():
     assert controller.current_state == controller.STATE_ROAD1_GREEN
     assert status["road1"] == "YELLOW"
 
+    # Then an all-red clearance interval before the cross road gets green.
     clock.advance(controller.YELLOW_TIME + 0.05)
+    status = controller.update_signal_timing(road1_vehicles=5, road2_vehicles=1)
+    assert status["road1"] == "RED"
+    assert status["road2"] == "RED"
+
+    clock.advance(controller.RED_TIME)
     status = controller.update_signal_timing(road1_vehicles=5, road2_vehicles=1)
     assert controller.current_state == controller.STATE_ROAD2_GREEN
     assert status["road1"] == "RED"
@@ -75,7 +81,7 @@ def test_controller_switches_after_green_and_yellow():
     status = controller.update_signal_timing(road1_vehicles=4, road2_vehicles=1)
     assert status["road2"] == "YELLOW"
 
-    clock.advance(controller.YELLOW_TIME + 0.05)
+    clock.advance(controller.YELLOW_TIME + controller.RED_TIME + 0.05)
     status = controller.update_signal_timing(road1_vehicles=4, road2_vehicles=1)
     assert controller.current_state == controller.STATE_ROAD1_GREEN
     assert status["road1"] == "GREEN"
@@ -103,7 +109,7 @@ def test_controller_never_skips_yellow_when_green_time_shrinks():
     assert status["road1"] == "YELLOW"
     assert status["road2"] == "RED"
 
-    clock.advance(controller.YELLOW_TIME + 0.05)
+    clock.advance(controller.YELLOW_TIME + controller.RED_TIME + 0.05)
     status = controller.update_signal_timing(road1_vehicles=2, road2_vehicles=2)
     assert controller.current_state == controller.STATE_ROAD2_GREEN
     assert status["road2"] == "GREEN"
@@ -246,7 +252,7 @@ def test_controller_threshold_priority_and_switching():
     assert status["road2"] == "RED"
     
     # Advance through yellow
-    clock.advance(controller.YELLOW_TIME + 0.1)
+    clock.advance(controller.YELLOW_TIME + controller.RED_TIME + 0.1)
     
     status = controller.update_signal_timing(
         road1_vehicles=0,
@@ -296,7 +302,7 @@ def test_controller_threshold_priority_and_switching():
     assert status["road1"] == "RED"
     assert status["road2"] == "YELLOW"
     
-    clock.advance(controller.YELLOW_TIME + 0.1)
+    clock.advance(controller.YELLOW_TIME + controller.RED_TIME + 0.1)
     
     status = controller.update_signal_timing(
         road1_vehicles=1,
@@ -369,7 +375,7 @@ def test_controller_holds_secondary_road_until_main_is_clear():
     # Expect Yellow
     assert status["road1"] == "YELLOW"
     
-    clock.advance(controller.YELLOW_TIME + 0.1)
+    clock.advance(controller.YELLOW_TIME + controller.RED_TIME + 0.1)
     
     status = controller.update_signal_timing(
         road1_vehicles=0,
@@ -497,7 +503,7 @@ def test_controller_early_switch_never_skips_yellow():
     assert controller.current_state == controller.STATE_ROAD1_GREEN
 
     # Only after a full yellow phase does the switch complete.
-    clock.advance(controller.YELLOW_TIME + 0.05)
+    clock.advance(controller.YELLOW_TIME + controller.RED_TIME + 0.05)
     status = controller.update_signal_timing(road1_vehicles=0, road2_vehicles=3)
 
     assert controller.current_state == controller.STATE_ROAD2_GREEN
@@ -520,7 +526,7 @@ def test_controller_early_yellow_completes_even_if_demand_fluctuates():
     status = controller.update_signal_timing(road1_vehicles=1, road2_vehicles=3)
     assert status["road1"] == "YELLOW"
 
-    clock.advance(controller.YELLOW_TIME)
+    clock.advance(controller.YELLOW_TIME + controller.RED_TIME)
     controller.update_signal_timing(road1_vehicles=1, road2_vehicles=3)
     assert controller.current_state == controller.STATE_ROAD2_GREEN
 

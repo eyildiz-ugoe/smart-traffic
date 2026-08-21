@@ -168,13 +168,21 @@ class TrafficLightController:
             if early_switch or self._yellow_start is not None or elapsed_time >= self.green_time_road1:
                 if self._yellow_start is None:
                     self._yellow_start = current_time
-                yellow_elapsed = current_time - self._yellow_start
-                signal_status["road1"] = "YELLOW"
-                signal_status["road2"] = "RED"
-                signal_status["time_remaining"] = max(0.0, self.YELLOW_TIME - yellow_elapsed)
+                changeover_elapsed = current_time - self._yellow_start
                 signal_status["next_switch"] = True
-                # Complete the transition only after a full yellow phase.
-                if yellow_elapsed >= self.YELLOW_TIME:
+                if changeover_elapsed < self.YELLOW_TIME:
+                    signal_status["road1"] = "YELLOW"
+                    signal_status["road2"] = "RED"
+                    signal_status["time_remaining"] = self.YELLOW_TIME - changeover_elapsed
+                elif changeover_elapsed < self.YELLOW_TIME + self.RED_TIME:
+                    # All-red clearance: committed vehicles leave the
+                    # conflict area before the cross road receives green.
+                    signal_status["road1"] = "RED"
+                    signal_status["road2"] = "RED"
+                    signal_status["time_remaining"] = (
+                        self.YELLOW_TIME + self.RED_TIME - changeover_elapsed
+                    )
+                else:
                     self.current_state = self.STATE_ROAD2_GREEN
                     self.state_start_time = current_time
                     self._yellow_start = None
@@ -190,13 +198,21 @@ class TrafficLightController:
             if early_switch or self._yellow_start is not None or elapsed_time >= self.green_time_road2:
                 if self._yellow_start is None:
                     self._yellow_start = current_time
-                yellow_elapsed = current_time - self._yellow_start
-                signal_status["road1"] = "RED"
-                signal_status["road2"] = "YELLOW"
-                signal_status["time_remaining"] = max(0.0, self.YELLOW_TIME - yellow_elapsed)
+                changeover_elapsed = current_time - self._yellow_start
                 signal_status["next_switch"] = True
-                # Complete the transition only after a full yellow phase.
-                if yellow_elapsed >= self.YELLOW_TIME:
+                if changeover_elapsed < self.YELLOW_TIME:
+                    signal_status["road1"] = "RED"
+                    signal_status["road2"] = "YELLOW"
+                    signal_status["time_remaining"] = self.YELLOW_TIME - changeover_elapsed
+                elif changeover_elapsed < self.YELLOW_TIME + self.RED_TIME:
+                    # All-red clearance: committed vehicles leave the
+                    # conflict area before the cross road receives green.
+                    signal_status["road1"] = "RED"
+                    signal_status["road2"] = "RED"
+                    signal_status["time_remaining"] = (
+                        self.YELLOW_TIME + self.RED_TIME - changeover_elapsed
+                    )
+                else:
                     self.current_state = self.STATE_ROAD1_GREEN
                     self.state_start_time = current_time
                     self._yellow_start = None
