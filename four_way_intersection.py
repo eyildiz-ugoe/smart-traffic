@@ -48,6 +48,11 @@ logger = logging.getLogger(__name__)
 APPROACHES = ("N", "S", "E", "W")
 AXIS_OF = {"N": "NS", "S": "NS", "E": "EW", "W": "EW"}
 
+#: Human-readable names: an approach is the traffic arriving FROM that
+#: compass direction (the "North" approach drives southward, and so on).
+APPROACH_NAMES = {"N": "North", "S": "South", "E": "East", "W": "West"}
+AXIS_NAMES = {"NS": "North-South", "EW": "East-West"}
+
 
 class FourWayController:
     """Two-phase adaptive controller for a four-way intersection."""
@@ -341,6 +346,30 @@ class FourWaySimulation:
             self._font_scale(mult), color, self._thickness(mult), cv2.LINE_AA,
         )
 
+    def _text_centered(
+        self,
+        frame: "np.ndarray",
+        text: str,
+        logical_center_x: float,
+        logical_baseline_y: float,
+        color: Tuple[int, int, int] = (255, 255, 255),
+        mult: float = 1.0,
+    ) -> None:
+        """Outlined text horizontally centred on a logical x position."""
+
+        (text_w, _), _ = cv2.getTextSize(
+            text, cv2.FONT_HERSHEY_SIMPLEX, self._font_scale(mult), self._thickness(mult)
+        )
+        org = (self.px(logical_center_x) - text_w // 2, self.px(logical_baseline_y))
+        cv2.putText(
+            frame, text, org, cv2.FONT_HERSHEY_SIMPLEX,
+            self._font_scale(mult), (0, 0, 0), self._thickness(mult) + 2, cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame, text, org, cv2.FONT_HERSHEY_SIMPLEX,
+            self._font_scale(mult), color, self._thickness(mult), cv2.LINE_AA,
+        )
+
     # -- world -------------------------------------------------------------
     def counts(self) -> Dict[str, int]:
         return {name: app.demand_count() for name, app in self.approaches.items()}
@@ -391,6 +420,22 @@ class FourWaySimulation:
         cv2.line(frame, (px(c), px(c + so)), (px(c + rw), px(c + so)), (230, 230, 230), stop_th)  # S
         cv2.line(frame, (px(c + so), px(c - rw)), (px(c + so), px(c)), (230, 230, 230), stop_th)  # E
         cv2.line(frame, (px(c - so), px(c)), (px(c - so), px(c + rw)), (230, 230, 230), stop_th)  # W
+
+        # Direction-of-travel arrows at the entry of each incoming lane, so
+        # it is obvious which way every approach drives.
+        lo = self.lane_offset
+        arrow_color = (205, 205, 205)
+        arrows = [
+            ((c - lo, 26.0), (c - lo, 68.0)),                          # North approach: downward
+            ((c + lo, LOGICAL_SIZE - 26.0), (c + lo, LOGICAL_SIZE - 68.0)),  # South: upward
+            ((LOGICAL_SIZE - 26.0, c - lo), (LOGICAL_SIZE - 68.0, c - lo)),  # East: leftward
+            ((26.0, c + lo), (68.0, c + lo)),                          # West: rightward
+        ]
+        for (x1, y1), (x2, y2) in arrows:
+            cv2.arrowedLine(
+                frame, (px(x1), px(y1)), (px(x2), px(y2)),
+                arrow_color, self._thickness(), tipLength=0.35,
+            )
         return frame
 
     def _vehicle_rect(self, name: str, vehicle: ApproachVehicle) -> Tuple[int, int, int, int]:
@@ -448,17 +493,26 @@ class FourWaySimulation:
                 color if lit else (70, 70, 70),
                 -1,
             )
-        # Approach letter beneath the housing, outlined for contrast.
-        self._text(frame, name, (lx + w / 2 - 6.0, ly + h + 16.0), mult=0.95)
+        # Full approach name beneath the housing: traffic arriving FROM
+        # that compass direction.
+        self._text_centered(frame, APPROACH_NAMES[name], lx + w / 2, ly + h + 18.0, mult=0.9)
 
     def _draw_hud(self, frame: "np.ndarray", status: Dict[str, object]) -> None:
         counts = self.counts()
+        axis_name = AXIS_NAMES[str(status["active_axis"])]
+        phase = str(status["phase"])
+        phase_text = {
+            "GREEN": f"{axis_name} road has GREEN",
+            "YELLOW": f"{axis_name} road: YELLOW (changing)",
+            "ALL_RED": "All red (safety clearance)",
+        }[phase]
         info = [
-            f"Axis: {status['active_axis']} {status['phase']}",
-            "Waiting  N:%d S:%d E:%d W:%d" % (counts["N"], counts["S"], counts["E"], counts["W"]),
+            phase_text,
+            "Cars waiting  North:%d  South:%d  East:%d  West:%d"
+            % (counts["N"], counts["S"], counts["E"], counts["W"]),
             "Switches: %d (demand-driven: %d)"
             % (status["total_switches"], status["early_switches"]),
-            "Avg wait  NS: %.1fs  EW: %.1fs"
+            "Avg wait  North-South: %.1fs  East-West: %.1fs"
             % (
                 (self.approaches["N"].average_wait() + self.approaches["S"].average_wait()) / 2,
                 (self.approaches["E"].average_wait() + self.approaches["W"].average_wait()) / 2,
@@ -468,9 +522,17 @@ class FourWaySimulation:
         if remaining is not None:
             info.insert(1, f"Phase ends in: {float(remaining):.1f}s")
 
-        # Translucent panel keeps the text readable over any scene content.
+        # Translucent panel sized to the widest line, so no resolution or
+        # wording change can push text outside the background.
         line_h = 24.0
-        panel_w, panel_h = 264.0, 12.0 + line_h * len(info)
+        max_text_px = max(
+            cv2.getTextSize(
+                text, cv2.FONT_HERSHEY_SIMPLEX, self._font_scale(), self._thickness()
+            )[0][0]
+            for text in info
+        )
+        panel_w = max_text_px / self.scale + 24.0
+        panel_h = 12.0 + line_h * len(info)
         overlay = frame.copy()
         cv2.rectangle(
             overlay, (self.px(8.0), self.px(8.0)),
@@ -663,7 +725,7 @@ class RealFourWayIntersection:
             cv2.rectangle(out, (zx, zy), (zx + zw, zy + zh), ZONE_COLORS[name], 2)
             cv2.putText(
                 out,
-                f"{name}: {counts[name]} [{signal}]",
+                f"{APPROACH_NAMES[name]}: {counts[name]} cars [{signal}]",
                 (zx + 4, zy + 22),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
@@ -671,11 +733,11 @@ class RealFourWayIntersection:
                 2,
             )
 
-        cv2.rectangle(out, (14, 14), (330, 96), (40, 40, 40), -1)
+        cv2.rectangle(out, (14, 14), (400, 96), (40, 40, 40), -1)
         lines = [
             "SHADOW MODE - adaptive plan",
-            f"Axis {status['active_axis']} {status['phase']}",
-            f"Early switches: {status['early_switches']} / {status['total_switches']}",
+            f"{AXIS_NAMES[str(status['active_axis'])]} road: {status['phase']}",
+            f"Switches: {status['total_switches']} (demand-driven: {status['early_switches']})",
         ]
         for idx, text in enumerate(lines):
             cv2.putText(out, text, (24, 40 + idx * 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
