@@ -311,6 +311,22 @@ class VehicleDetector:
         )[0]
         return self._results_to_detections(results)
 
+    def reset_tracker(self) -> None:
+        """Clear ByteTrack state (e.g. when a looping video rewinds).
+
+        Best-effort: the tracker objects only exist after the first
+        ``track_vehicles`` call, and the internal API may vary between
+        ultralytics releases.
+        """
+
+        predictor = getattr(self.model, "predictor", None)
+        trackers = getattr(predictor, "trackers", None) or []
+        for tracker in trackers:
+            try:
+                tracker.reset()
+            except Exception:  # pragma: no cover - version-dependent internals
+                logger.debug("Tracker reset unsupported; continuing without it")
+
     def track_vehicles(self, frame: np.ndarray) -> List[VehicleDetection]:
         """Detect vehicles with persistent tracker IDs (ByteTrack).
 
@@ -576,20 +592,28 @@ class SmartTrafficSystem:
             target_state = cv2.WINDOW_FULLSCREEN if fullscreen_active else cv2.WINDOW_NORMAL
             cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, target_state)
 
+        read_failures = 0
         try:
             while max_frames is None or frame_count < max_frames:
                 # Read frames from both videos
                 ret1, frame1 = self.cap_road1.read()
                 ret2, frame2 = self.cap_road2.read()
-                
+
                 # Check if we've reached the end of either video
                 if not ret1 or not ret2:
+                    read_failures += 1
+                    if read_failures > 1:
+                        raise RuntimeError(
+                            "Unable to read frames from the video sources even after "
+                            "rewinding — a file may be corrupt or truncated."
+                        )
                     logger.info("End of video reached. Restarting playback from the beginning.")
                     self.cap_road1.set(cv2.CAP_PROP_POS_FRAMES, 0)
                     self.cap_road2.set(cv2.CAP_PROP_POS_FRAMES, 0)
                     self.queue_analyzer_road1.counter.reset()
                     self.queue_analyzer_road2.counter.reset()
                     continue
+                read_failures = 0
                 
                 # Resize frames for better visualization
                 frame1 = cv2.resize(frame1, (640, 480))

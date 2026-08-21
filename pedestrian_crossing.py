@@ -75,6 +75,14 @@ class PedestrianSignalController:
     #: yellow while a car is in the dilemma zone, but that car is fully
     #: protected by the yellow + all-red interval.
     ALL_RED_TIME = 2.5
+    #: If the detector still reports a vehicle near the crossing when the
+    #: base all-red elapses, WALK is postponed until the zone clears — up to
+    #: this bound. This makes clearance camera-geometry-independent: the
+    #: fixed timing math above covers the simulation, and live occupancy
+    #: covers arbitrary real scenes. Bounded so a misdetection (e.g. a
+    #: parked car the motion filter has not flagged yet) cannot block the
+    #: pedestrian phase indefinitely.
+    MAX_CLEARANCE_EXTENSION = 6.0
     WALK_TIME = 8.0
     PED_CLEARANCE_TIME = 4.0
     #: A pedestrian is never left waiting longer than this, even under
@@ -114,8 +122,14 @@ class PedestrianSignalController:
         pedestrian_waiting: bool,
         vehicle_in_dilemma_zone: bool = False,
         vehicle_count: int = 0,
+        crossing_occupied: bool = False,
     ) -> Dict[str, object]:
-        """Advance the state machine with the latest detections."""
+        """Advance the state machine with the latest detections.
+
+        ``crossing_occupied`` reports whether a vehicle is physically on the
+        crosswalk itself (not the upstream approach); the all-red clearance
+        holds while it is true, up to ``MAX_CLEARANCE_EXTENSION``.
+        """
 
         now = self._time_func()
 
@@ -146,13 +160,21 @@ class PedestrianSignalController:
             if self._elapsed() >= self.YELLOW_TIME:
                 self._enter("ALL_RED")
         elif self.state == "ALL_RED":
-            if self._elapsed() >= self.ALL_RED_TIME:
-                if self._ped_wait_start is not None:
-                    self.total_ped_wait += now - self._ped_wait_start
-                self.pedestrians_served += 1
-                self._ped_wait_start = None
-                self._ped_last_seen = None
-                self._enter("WALK")
+            elapsed = self._elapsed()
+            if elapsed >= self.ALL_RED_TIME:
+                # Hold the all-red while a vehicle is still physically on
+                # the crosswalk, up to a bounded extension.
+                still_blocked = (
+                    crossing_occupied
+                    and elapsed < self.ALL_RED_TIME + self.MAX_CLEARANCE_EXTENSION
+                )
+                if not still_blocked:
+                    if self._ped_wait_start is not None:
+                        self.total_ped_wait += now - self._ped_wait_start
+                    self.pedestrians_served += 1
+                    self._ped_wait_start = None
+                    self._ped_last_seen = None
+                    self._enter("WALK")
         elif self.state == "WALK":
             if self._elapsed() >= self.WALK_TIME:
                 self._enter("PED_CLEARANCE")
@@ -320,6 +342,16 @@ class PedestrianCrossingSimulation:
             if vehicle.position + vehicle.length <= stop_line
         )
 
+    def crossing_occupied(self) -> bool:
+        """True while any vehicle body overlaps the crosswalk band."""
+
+        for vehicle in self.road.vehicles:
+            top = vehicle.position
+            bottom = vehicle.position + vehicle.length
+            if top <= self.crosswalk_bottom and bottom >= self.crosswalk_top:
+                return True
+        return False
+
     def step(self, dt: float) -> Dict[str, object]:
         """Advance the world and controller by ``dt`` simulated seconds."""
 
@@ -330,6 +362,7 @@ class PedestrianCrossingSimulation:
             pedestrian_waiting=self.pedestrian_waiting(),
             vehicle_in_dilemma_zone=self.vehicle_in_dilemma_zone(),
             vehicle_count=self.vehicle_count(),
+            crossing_occupied=self.crossing_occupied(),
         )
         self.road.step(str(status["car_signal"]), dt)
         self._update_pedestrians(str(status["ped_signal"]), dt)
@@ -549,6 +582,28 @@ class RealPedestrianCrossing:
         zx, zy, zw, zh = zone
         return zx <= cx <= zx + zw and zy <= cy <= zy + zh
 
+    @staticmethod
+    def _bbox_intersects_zone(detection, zone: Tuple[int, int, int, int]) -> bool:
+        x, y, w, h = detection.bbox
+        zx, zy, zw, zh = zone
+        return x <= zx + zw and x + w >= zx and y <= zy + zh and y + h >= zy
+
+    def _reset_playback_state(self) -> None:
+        """Reset per-video temporal state when the looping video rewinds.
+
+        The tracker and presence debouncers would otherwise interpret the
+        jump from the last frame to the first as continuous motion. The
+        motion filter keeps parked-candidate state (position-stable across
+        the rewind) and forgets moving tracks; the controller keeps running
+        on its monotonic frame clock.
+        """
+
+        now = self._frame_index / self.fps
+        self.detector.reset_tracker()
+        self.motion_filter.handle_discontinuity(now)
+        self._ped_presence = _Presence()
+        self._vehicle_presence = _Presence(window=6, threshold=2)
+
     def process_frame(self, frame: "np.ndarray") -> Tuple["np.ndarray", Dict[str, object]]:
         detections = self.detector.track_vehicles(frame)
         persons = [d for d in detections if d.class_id == PERSON_CLASS_ID]
@@ -575,6 +630,15 @@ class RealPedestrianCrossing:
         vehicles_in_zone = [d for d in moving_vehicles if self._center_in_zone(d, veh_zone)]
         persons_in_zone = [d for d in persons if self._center_in_zone(d, ped_zone)]
 
+        # A vehicle body overlapping the pedestrian zone means the crosswalk
+        # itself is occupied — the all-red clearance holds for it. Parked
+        # vehicles count too: a car sitting on the crossing genuinely blocks
+        # it (bounded by MAX_CLEARANCE_EXTENSION either way).
+        crossing_occupied = any(
+            self._bbox_intersects_zone(d, ped_zone)
+            for d in (*moving_vehicles, *parked_vehicles)
+        )
+
         ped_waiting = self._ped_presence.update(bool(persons_in_zone))
         vehicle_near = self._vehicle_presence.update(bool(vehicles_in_zone))
 
@@ -583,6 +647,7 @@ class RealPedestrianCrossing:
             pedestrian_waiting=ped_waiting,
             vehicle_in_dilemma_zone=vehicle_near,
             vehicle_count=len(vehicles_in_zone),
+            crossing_occupied=crossing_occupied,
         )
 
         annotated = self._annotate(
@@ -676,6 +741,7 @@ class RealPedestrianCrossing:
                         )
                     logger.info("End of video reached; looping playback.")
                     self.capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    self._reset_playback_state()
                     continue
                 read_failures = 0
                 annotated, _ = self.process_frame(frame)

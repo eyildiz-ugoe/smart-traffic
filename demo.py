@@ -202,6 +202,13 @@ def main(argv: list[str] | None = None) -> None:
             parser.error("--case is required (or use --list to see the options)")
         return
 
+    if args.fps <= 0:
+        parser.error("--fps must be a positive integer")
+    if args.max_frames is not None and args.max_frames < 0:
+        parser.error("--max-frames must be >= 0")
+    if args.size is not None and not 320 <= args.size <= 2160:
+        parser.error("--size must be between 320 and 2160 pixels")
+
     title, _ = CASES[args.case]
     logger.info("Running Case %d (%s) in %s mode", args.case, title, args.mode)
     {1: run_case1, 2: run_case2, 3: run_case3}[args.case](args)

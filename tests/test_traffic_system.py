@@ -89,6 +89,26 @@ def test_controller_switches_after_green_and_yellow():
     assert status["time_remaining"] == controller.green_time_road1
 
 
+def test_controller_rests_in_green_when_cross_road_is_empty():
+    """An expired green must NOT begin a changeover while the opposing road
+    has no demand — an empty road is never served on a timer."""
+
+    clock = FakeClock()
+    controller = TrafficLightController(time_func=clock)
+
+    for _ in range(10):
+        clock.advance(30.0)
+        status = controller.update_signal_timing(road1_vehicles=3, road2_vehicles=0)
+
+    # 300 seconds beyond any green window: still resting in green.
+    assert controller.current_state == controller.STATE_ROAD1_GREEN
+    assert status["road1"] == "GREEN"
+
+    # The moment cross demand appears, the changeover begins.
+    status = controller.update_signal_timing(road1_vehicles=3, road2_vehicles=2)
+    assert status["road1"] == "YELLOW"
+
+
 def test_controller_never_skips_yellow_when_green_time_shrinks():
     """Regression: recomputing a shorter green must not jump straight to red.
 

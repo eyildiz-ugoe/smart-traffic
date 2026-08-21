@@ -135,6 +135,18 @@ def test_main_dispatches_to_selected_case(monkeypatch):
     assert called["case"] == 2
 
 
+def test_main_rejects_out_of_range_values(monkeypatch):
+    monkeypatch.setattr(demo, "run_case3", lambda args: None)
+    with pytest.raises(SystemExit):
+        demo.main(["--case", "3", "--fps", "0"])
+    with pytest.raises(SystemExit):
+        demo.main(["--case", "3", "--size", "10"])
+    with pytest.raises(SystemExit):
+        demo.main(["--case", "3", "--max-frames", "-5"])
+    # Valid values pass through.
+    demo.main(["--case", "3", "--fps", "30", "--size", "640", "--max-frames", "0"])
+
+
 def test_case2_real_rejects_partial_video_override():
     parser = demo.build_parser()
     args = parser.parse_args(["--case", "2", "--mode", "real", "--video-road1", "x.mp4"])

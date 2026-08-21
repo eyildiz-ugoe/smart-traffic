@@ -165,7 +165,11 @@ class TrafficLightController:
             # complete it even if demand fluctuates; every path displays a
             # full yellow phase — including when the green duration shrinks
             # below the already-elapsed time.
-            if early_switch or self._yellow_start is not None or elapsed_time >= self.green_time_road1:
+            # Rest-in-green: an expired green only begins a changeover when
+            # the opposing road actually has demand — an empty cross road is
+            # never served on a timer.
+            timeout_switch = elapsed_time >= self.green_time_road1 and road2_has_demand
+            if early_switch or self._yellow_start is not None or timeout_switch:
                 if self._yellow_start is None:
                     self._yellow_start = current_time
                 changeover_elapsed = current_time - self._yellow_start
@@ -195,7 +199,9 @@ class TrafficLightController:
                 signal_status["road2"] = "RED"
                 signal_status["time_remaining"] = self.green_time_road1 - elapsed_time
         else:
-            if early_switch or self._yellow_start is not None or elapsed_time >= self.green_time_road2:
+            # Rest-in-green (see the road-1 branch above).
+            timeout_switch = elapsed_time >= self.green_time_road2 and road1_has_demand
+            if early_switch or self._yellow_start is not None or timeout_switch:
                 if self._yellow_start is None:
                     self._yellow_start = current_time
                 changeover_elapsed = current_time - self._yellow_start

@@ -108,6 +108,45 @@ def test_max_wait_overrides_constant_traffic():
     assert status["state"] == "CAR_YELLOW"
 
 
+def test_all_red_holds_while_crosswalk_is_occupied():
+    """The all-red clearance extends (bounded) while a vehicle is still
+    physically on the crosswalk, regardless of camera geometry."""
+
+    clock, controller = make_controller()
+
+    controller.update(pedestrian_waiting=True)
+    clock.advance(controller.MIN_CAR_GREEN + 0.1)
+    controller.update(pedestrian_waiting=True)  # -> CAR_YELLOW
+    clock.advance(controller.YELLOW_TIME + 0.05)
+    controller.update(pedestrian_waiting=True)  # -> ALL_RED
+
+    # Base all-red elapses but a car is still on the crossing: hold.
+    clock.advance(controller.ALL_RED_TIME + 0.05)
+    status = controller.update(pedestrian_waiting=True, crossing_occupied=True)
+    assert status["state"] == "ALL_RED"
+
+    # The car clears: WALK begins.
+    clock.advance(0.5)
+    status = controller.update(pedestrian_waiting=True, crossing_occupied=False)
+    assert status["state"] == "WALK"
+
+
+def test_all_red_extension_is_bounded():
+    clock, controller = make_controller()
+
+    controller.update(pedestrian_waiting=True)
+    clock.advance(controller.MIN_CAR_GREEN + 0.1)
+    controller.update(pedestrian_waiting=True)
+    clock.advance(controller.YELLOW_TIME + 0.05)
+    controller.update(pedestrian_waiting=True)  # -> ALL_RED
+
+    # Crossing reported occupied forever (e.g. a mis-detection): the hold
+    # is bounded so the pedestrian is still served.
+    clock.advance(controller.ALL_RED_TIME + controller.MAX_CLEARANCE_EXTENSION + 0.1)
+    status = controller.update(pedestrian_waiting=True, crossing_occupied=True)
+    assert status["state"] == "WALK"
+
+
 def test_raw_zero_count_cannot_bypass_debounced_dilemma_guard():
     """Regression: a single-frame detection dropout (count 0) must not start
     the yellow while the debounced dilemma-zone flag still reports a car."""

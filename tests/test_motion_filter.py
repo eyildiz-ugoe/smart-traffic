@@ -95,6 +95,59 @@ def test_prune_forgets_lost_tracks():
     assert not mf.is_parked(1, 10.0)  # forgotten, so treated as fresh
 
 
+def test_discontinuity_preserves_parked_candidates_by_position():
+    """Across a video-loop rewind, a never-moved (parked) car keeps its
+    accumulated history even though the tracker assigns it a new ID."""
+
+    mf = make_filter(never_moved_grace=60.0)
+
+    mf.observe(1, (400.0, 300.0), 0.0)
+    mf.observe(1, (400.0, 300.0), 40.0)
+    assert not mf.is_parked(1, 40.0)  # grace not yet reached
+
+    mf.handle_discontinuity(40.0)
+    # After the rewind the same car re-appears at the same spot as ID 7.
+    mf.observe(7, (402.0, 301.0), 41.0)
+    mf.observe(7, (402.0, 301.0), 61.0)
+    assert mf.is_parked(7, 61.0)  # first_seen carried across the seam
+
+
+def test_discontinuity_drops_moving_tracks():
+    """A car that was driving keeps NO state across the seam — whatever
+    appears at its old position is a different vehicle and starts fresh."""
+
+    mf = make_filter()
+
+    mf.observe(2, (100.0, 100.0), 0.0)
+    mf.observe(2, (200.0, 100.0), 1.0)  # moving
+    mf.handle_discontinuity(1.0)
+
+    mf.observe(9, (200.0, 100.0), 2.0)  # new car at the old position
+    mf.observe(9, (200.0, 100.0), 100.0)
+    # Fresh never-moved clock: parked only via its own grace, and 98s > 60s
+    # means it is now (correctly) treated as never-moved parked.
+    assert mf.is_parked(9, 100.0)
+    # But crucially it was NOT parked shortly after the seam:
+    mf2 = make_filter()
+    mf2.observe(2, (100.0, 100.0), 0.0)
+    mf2.observe(2, (200.0, 100.0), 1.0)
+    mf2.handle_discontinuity(1.0)
+    mf2.observe(9, (200.0, 100.0), 2.0)
+    assert not mf2.is_parked(9, 2.0)
+
+
+def test_orphans_expire_after_the_adoption_window():
+    mf = make_filter()
+
+    mf.observe(1, (400.0, 300.0), 0.0)
+    mf.handle_discontinuity(0.0, adopt_window=3.0)
+
+    # Nothing re-appears at that spot until well past the window.
+    mf.observe(5, (400.0, 300.0), 10.0)
+    mf.observe(5, (400.0, 300.0), 12.0)
+    assert not mf.is_parked(5, 12.0)  # fresh track, no inherited history
+
+
 def test_rejects_invalid_configuration():
     with pytest.raises(ValueError):
         MotionFilter(move_radius=0.0)

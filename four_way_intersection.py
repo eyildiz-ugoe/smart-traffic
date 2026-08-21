@@ -690,6 +690,20 @@ class RealFourWayIntersection:
             smoothed[name] = int(round(sum(history) / len(history)))
         return smoothed
 
+    def _reset_playback_state(self) -> None:
+        """Reset per-video temporal state when the looping video rewinds.
+
+        See RealPedestrianCrossing._reset_playback_state: tracker and count
+        smoothing restart, the motion filter keeps only position-stable
+        parked-candidate state, and the controller clock stays monotonic.
+        """
+
+        now = self._frame_index / self.fps
+        self.detector.reset_tracker()
+        self.motion_filter.handle_discontinuity(now)
+        for history in self._count_history.values():
+            history.clear()
+
     def process_frame(self, frame: "np.ndarray") -> Tuple["np.ndarray", Dict[str, object]]:
         detections = self.detector.track_vehicles(frame)
         now = self._frame_index / self.fps
@@ -803,6 +817,7 @@ class RealFourWayIntersection:
                         )
                     logger.info("End of video reached; looping playback.")
                     self.capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    self._reset_playback_state()
                     continue
                 read_failures = 0
                 annotated, _ = self.process_frame(frame)
