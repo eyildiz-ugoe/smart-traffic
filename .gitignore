@@ -34,3 +34,6 @@ Thumbs.db
 
 # Stray Windows shell-cache artifacts
 %SystemDrive%/
+
+# Secrets
+.env
