@@ -1,188 +1,301 @@
-# Smart Traffic Light Automation 🚦 — Pilot Demonstration
+# Smart Traffic Light Automation 🚦
 
-A pilot system for **demand-actuated traffic signals**: cameras (or a
+**A pilot demonstration of demand-actuated traffic signals**: cameras (or a
 simulation) detect vehicles and pedestrians in real time with YOLOv8, and an
 adaptive controller only holds a red light when someone actually benefits
 from it. No traffic on the cross road? The green stays green — less idling,
-less fuel burned, shorter queues.
+fewer stops, less fuel burned, shorter queues.
 
-Every case runs in two modes:
+![Adaptive four-way intersection simulation](docs/case3_simulation.jpg)
 
-- 🚗 **Simulation** — synthetic traffic, zero setup, reproducible with a seed
-- 🎥 **Real** — prerecorded camera footage with live YOLOv8 detection, in
-  *shadow mode*: the overlay shows the decisions the adaptive controller
-  would issue for the observed traffic. Shadow evaluation is the standard
-  first stage of a signal-control pilot, before any signal hardware is touched.
+---
 
-## 🎬 The three demo cases
+## What this system is
+
+Fixed signal plans burn fuel three ways: vehicles idle at red lights that
+protect empty roads, they re-accelerate after unnecessary stops, and
+pedestrians wait out long fixed cycles regardless of demand. This pilot
+replaces the timer with **detection**, demonstrated as three escalating
+cases, each runnable in two modes from a single entry point:
+
+```bash
+pip install -r requirements.txt
+python demo.py --list
+python demo.py --case <1|2|3> --mode <simulation|real>
+```
 
 | Case | Scenario | The point it proves |
 |------|----------|---------------------|
 | 1 | **Pedestrian crossing** (one road + crosswalk) | Cars keep green until a pedestrian actually needs to cross; the walk phase is granted at the next safe gap |
 | 2 | **Two-road intersection** (two one-way feeds) | Green time follows measured demand and queue pressure instead of a fixed plan |
-| 3 | **Four-way intersection** (crossroads) | An empty approach never holds up cross traffic; fairness caps guarantee no one waits forever |
+| 3 | **Four-way intersection** (crossroads) | An empty approach never holds up cross traffic; safety sequencing and fairness are guaranteed |
+
+### The two modes
+
+- 🚗 **Simulation** — synthetic traffic with queueing physics, zero setup,
+  reproducible with `--seed`, auto-sized to your monitor. Ideal for live
+  presentations: the counters on screen (demand-driven switches, average
+  wait per axis) tell the fuel-saving story in real time.
+- 🎥 **Real (shadow mode)** — prerecorded camera footage with live YOLOv8
+  detection and ByteTrack tracking. The detections are real; the overlay
+  shows the signal decisions the adaptive controller *would* issue for the
+  observed traffic. Shadow evaluation on existing cameras is the standard
+  first stage of a real signal-control pilot, before any signal hardware
+  is touched — the recorded vehicles obey their original signals, not ours.
+
+---
+
+## Case 1 — Pedestrian crossing
+
+No pedestrian → the car light never turns red. When a pedestrian is
+detected waiting, the controller serves them after a minimum car-green
+time — but **only at a safe gap**: a *dilemma-zone guard* refuses to start
+the yellow while a fast vehicle is too close to the stop line to brake
+comfortably. A fairness cap guarantees service within 45 s of accumulated
+waiting even under constant traffic (the wait clock survives detection
+dropouts and occlusions), and the all-red clearance extends while a
+vehicle is still physically on the crosswalk.
+
+| Simulation | Real footage (shadow mode) |
+|---|---|
+| ![Case 1 simulation](docs/case1_simulation.jpg) | ![Case 1 real](docs/case1_walk_phase.jpg) |
 
 ```bash
-pip install -r requirements.txt
-
-python demo.py --list                                # describe the cases
-
-python demo.py --case 1 --mode simulation            # pedestrian crossing
-python demo.py --case 1 --mode real                  # Rouen crosswalk footage
-
-python demo.py --case 2 --mode simulation --seed 42  # two-road intersection
-python demo.py --case 2 --mode real                  # two traffic feeds
-
-python demo.py --case 3 --mode simulation            # four-way crossroads
-python demo.py --case 3 --mode real                  # Sherbrooke intersection footage
+python demo.py --case 1 --mode simulation --fullscreen
+python demo.py --case 1 --mode real     # Urban Tracker "Rouen" crosswalk
 ```
 
-`--fullscreen` starts any case fullscreen (press `F` to toggle, `q` to quit).
-`--max-frames N` and `--no-display` support scripted/headless runs.
+## Case 2 — Two-road intersection
 
-### Case 1 — Pedestrian crossing
+The original system: two video feeds (or two synthetic roads), YOLOv8
+vehicle detection, queue-aware ranking by distance to the stop line, and
+green-time extension driven by vehicle count and queue pressure. The light
+**rests in green** when the cross road is empty, switches early when the
+active road clears, and every changeover runs green → yellow → all-red →
+cross green.
 
-No pedestrian → the car light never turns red. When a pedestrian is detected
-waiting, the controller serves them after a minimum car-green time — but
-**only at a safe gap**: a *dilemma-zone guard* refuses to start the yellow
-while a fast vehicle is too close to the stop line to brake comfortably
-(the "cars go so fast the system might not catch them" concern is handled by
-design, not by hope). A waiting-time cap (45 s) guarantees the pedestrian is
-eventually served under constant traffic; the yellow + all-red clearance
-protects any vehicle already committed.
+![Case 2 simulation with queue metrics](docs/case2_simulation.jpg)
 
-![Case 1 walk phase on the Rouen sequence](docs/case1_walk_phase.jpg)
+```bash
+python demo.py --case 2 --mode simulation --seed 42
+python demo.py --case 2 --mode real     # bundled road1/road2 traffic clips
+```
 
-### Case 2 — Two-road intersection
+## Case 3 — Four-way intersection
 
-The original system: two video feeds (or two synthetic roads), YOLOv8 vehicle
-detection, queue-aware ranking by distance to the stop line, and green-time
-extension driven by vehicle count and queue pressure, with early switching
-when one road empties. Always sequences green → yellow → red.
-
-### Case 3 — Four-way intersection
-
-Two crossing roads, four approaches (N/S/E/W), standard two-phase plan
-(NS axis vs. EW axis) made adaptive:
+Two crossing roads, four approaches (North/South/East/West — labelled in
+full on screen, with direction arrows on every lane), standard two-phase
+plan (North-South axis vs. East-West axis) made adaptive:
 
 - an axis keeps green while it has demand (up to 30 s),
 - an **empty axis is skipped early** as soon as the cross axis has demand,
-- detected cross demand is served within ~35 s worst case (max green +
-  change interval), and a slow fixed-time recall (every 5 min) guards
-  against detector failure so no approach can ever be starved,
+- detected cross demand is served within ~35 s worst case, and a slow
+  fixed-time recall (every 5 min) guards against detector failure so no
+  approach can ever be starved,
 - every change runs green → yellow → **all-red clearance** → cross green.
 
-![Case 3 adaptive plan on the Sherbrooke sequence](docs/case3_adaptive_plan.jpg)
+| Real footage: adaptive plan | Real footage: parked-car immunity |
+|---|---|
+| ![Case 3 adaptive plan](docs/case3_adaptive_plan.jpg) | ![Parked cars excluded](docs/case3_parked_immunity.jpg) |
+
+```bash
+python demo.py --case 3 --mode simulation           # auto-fits your monitor
+python demo.py --case 3 --mode real     # Urban Tracker "Sherbrooke" intersection
+```
 
 ### Parked-car immunity (real modes)
 
 A single frame cannot distinguish a parked car from one queued at a red
-light — both are stationary. Real modes therefore run YOLOv8's ByteTrack
-tracker (`trackers/bytetrack_traffic.yaml`, tuned for distant traffic
-cameras) and a dwell-time filter (`motion_filter.py`): a vehicle that has
-never been seen moving, or has been stationary far longer than any signal
-cycle, is tagged **PARKED** on screen and excluded from demand counts —
-and starts counting again the moment it moves. Queued vehicles are safe:
-queue creep resets the dwell clock, and cars that drove into view keep
-their full dwell budget. Pedestrians are never filtered — a person
-standing at the crossing is exactly the demand Case 1 serves.
+light — both are stationary. Real modes therefore track every vehicle
+across frames (ByteTrack, tuned for distant traffic cameras in
+`trackers/bytetrack_traffic.yaml`) and apply a dwell-time filter
+(`motion_filter.py`): a vehicle never seen moving, or stationary far
+longer than any signal cycle, is tagged **PARKED** on screen and excluded
+from demand — and counts again the moment it moves. The filter's history
+survives tracker ID churn and looping playback via position-keyed state
+adoption. Queued vehicles are safe: queue creep resets the dwell clock,
+and cars that drove into view keep their full dwell budget. Pedestrians
+are never filtered — a person standing at the crossing is exactly the
+demand Case 1 serves.
 
-![Parked cars excluded from demand on the Sherbrooke sequence](docs/case3_parked_immunity.jpg)
+---
 
-## 🎥 Demo videos
+## What it can do
 
-Real-mode footage lives in `videos/` (shipped via Git LFS; `demo.py`
-re-downloads missing files automatically):
+- **Demand-actuated control** with hard safety invariants: conflicting
+  greens are structurally impossible, every changeover displays a full
+  yellow plus all-red clearance, and fairness caps prevent starvation —
+  properties held under adversarial fuzzing (millions of randomized
+  controller updates, clock jumps, detection flapping).
+- **Real-time detection** of vehicles (car, motorcycle, bus, truck) and
+  pedestrians with YOLOv8; GPU when available, automatic CPU fallback.
+- **Vehicle tracking** with parked-car exclusion (above).
+- **Zone-based, debounced sensing**: per-camera detection zones with
+  rolling presence windows, so a single missed frame never flickers the
+  signal plan; zones are validated at configuration time.
+- **Reproducible experiments**: simulations run on an injected simulated
+  clock (identical behavior headless or displayed, at any frame rate, on
+  any monitor resolution), seedable for rehearsable demos.
+- **Operational robustness**: corrupt/truncated videos fail loudly instead
+  of hanging; demo videos re-download with SHA-256 pinning, size caps, and
+  atomic writes; looping playback resets tracker state at the seam.
+- **74 automated tests** over the controller state machines, simulation
+  physics, zone logic, motion filter, downloader, and CLI.
+
+## What it can't do (yet)
+
+Honesty here is the credibility of the pilot:
+
+- **It does not control real signal hardware.** Shadow mode only — there
+  is no signal-controller interface (NTCIP/OCIT) and no fail-safe
+  hardware interlock. That is deliberately the next phase, not this one.
+- **Two-phase plans only.** No protected left-turn phases, no multi-phase
+  ring-and-barrier plans, no coordination between neighbouring
+  intersections (green waves). One intersection at a time.
+- **Detection limits.** YOLOv8-nano at ~5–15 FPS on CPU (30–60 FPS with a
+  GPU); small, distant, or heavily occluded objects can be missed; night,
+  rain, and snow footage have not been validated; detection zones are
+  calibrated per camera view by hand.
+- **No speed measurement.** The dilemma-zone guard is presence-based; a
+  production system would estimate approach speeds from track history to
+  time the yellow onset precisely.
+- **Simplified simulation physics.** Straight-through traffic only — no
+  turning movements, lane changes, or driver-behaviour modelling. For
+  engineering-grade evaluation the controllers should be coupled to a
+  microscopic simulator (e.g. SUMO).
+- **Evaluation metrics are on-screen counters,** not a calibrated
+  fuel/emissions model. Wait-time and stop counts are measured; converting
+  them to litres and CO₂ needs an accepted methodology (e.g. drive-cycle
+  factors) in the evaluation phase.
+- **Privacy posture is minimal.** Nothing is stored — frames are processed
+  and discarded — but a deployment would still need a formal privacy
+  review (camera placement, retention policy, signage) per local law.
+
+## Next steps (proposed pilot roadmap)
+
+1. **Shadow deployment on existing city cameras** (weeks, software only):
+   run exactly this system against live feeds at 2–3 candidate
+   intersections; log adaptive-plan decisions vs. the installed fixed
+   plans; report measured KPIs — vehicle-hours of avoidable red, stop
+   counts, pedestrian wait distributions.
+2. **Detection hardening**: fine-tune the detector on local footage
+   (night/rain/winter), add track-based speed estimation for the
+   dilemma-zone guard, evaluate a larger model on a GPU edge device
+   (e.g. Jetson-class) for 30+ FPS.
+3. **Controller enrichment**: protected turn phases and ring-and-barrier
+   plans; SUMO-in-the-loop evaluation against recorded demand profiles;
+   calibrated fuel/CO₂ savings estimates.
+4. **Hardware-in-the-loop**: integrate with a signal controller via the
+   locally used standard (NTCIP/OCIT), keeping the existing fixed plan as
+   the supervised fallback; certified fail-safe review.
+5. **Scale-out**: multi-intersection coordination (green waves along a
+   corridor), central monitoring dashboard, privacy/compliance sign-off.
+
+---
+
+## Architecture
+
+```
+demo.py                     ← single entry point: --case {1,2,3} --mode {simulation,real}
+├── pedestrian_crossing.py  ← Case 1: PedestrianSignalController + sim + real (shadow)
+├── smart_traffic_system.py ← Case 2: YOLO detector + tracker, queue analyzer, sim + real
+│   ├── traffic_core.py     ←   TrafficLightController + statistics
+│   ├── counter.py          ←   per-frame / cumulative counting
+│   └── sorter.py           ←   queue ordering by stop-line distance
+├── four_way_intersection.py← Case 3: FourWayController + sim + real (shadow)
+├── motion_filter.py        ← dwell-time parked-car filter (tracking-based)
+├── trackers/               ← ByteTrack configuration for traffic cameras
+└── video_downloader.py     ← pinned demo-video fetching + synthetic fallbacks
+```
+
+Shared design decisions:
+
+- **Every controller takes an injectable clock** (`time_func`) — simulations
+  drive it with simulated time, real mode with the video frame clock,
+  tests with a fake clock; production would use `time.monotonic` (the
+  default).
+- **Safety invariants are structural**: yellow and all-red are states in
+  the machine, not timers bolted on; no code path can jump green → green.
+- **Rendering is resolution-independent**: drawing scales from a logical
+  coordinate space, so behavior is identical on a laptop and a 4K wall.
+
+## Command-line options
+
+```
+python demo.py --case {1,2,3} --mode {simulation,real} [options]
+
+  --video PATH           real-mode video override (cases 1 and 3)
+  --video-road1/2 PATH   case 2 real-mode feeds (both or neither)
+  --fps INT              simulation frame rate            (default 30)
+  --seed INT             reproducible simulation runs
+  --size INT             case 3 render size, 320-2160 px  (default: auto-fit)
+  --max-frames INT       stop after N frames (scripted runs)
+  --no-display           headless (no GUI window)
+  --fullscreen           start fullscreen; F toggles, q quits
+```
+
+## Testing
+
+```bash
+# Core suites (no YOLO weights or videos needed) — 74 tests
+pytest tests/ -v --ignore=tests/test_animation_run.py
+
+# Integration tests (require ultralytics + video files)
+pytest tests/test_animation_run.py -v
+```
+
+The suites cover controller state machines (including fuzzer-derived
+regressions such as flicker-starvation and yellow-skip), simulation
+physics, zone logic, the motion filter, downloader hardening, and CLI
+validation.
+
+## Demo videos & licensing
+
+Real-mode footage ships in `videos/` via Git LFS; `demo.py` re-downloads
+missing files automatically (SHA-256-pinned):
 
 | File | Used by | Source & license |
 |------|---------|------------------|
 | `rouen_crosswalk.avi` | Case 1 | [Urban Tracker dataset, "Rouen"](https://www.jpjodoin.com/urbantracker/dataset.html) — Jodoin, Bilodeau, Saunier, *Urban Tracker: Multiple Object Tracking in Urban Mixed Traffic*, WACV 2014 (research dataset) |
 | `sherbrooke_intersection.avi` | Case 3 | [Urban Tracker dataset, "Sherbrooke"](https://www.jpjodoin.com/urbantracker/dataset.html) (research dataset) |
-| `road1.mp4`, `road2.mp4` | Case 2 | Royalty-free traffic clips (e.g. [Pexels 854100](https://www.pexels.com/video/854100/), [Pexels 3044127](https://www.pexels.com/video/3044127/) — download in a browser); synthetic test videos are generated automatically when absent |
+| `road1.mp4`, `road2.mp4` | Case 2 | Royalty-free traffic clips (e.g. [Pexels 854100](https://www.pexels.com/video/854100/), [Pexels 3044127](https://www.pexels.com/video/3044127/)); synthetic clips are generated when absent |
 | `pedestrian.mp4`, `intersection.mp4` | b-roll | [Mixkit aerial clips](https://mixkit.co) (Mixkit Free License) — presentation visuals; filmed too high for reliable YOLOv8n detection |
 
-**Zone calibration:** real mode counts objects inside configurable detection
-zones (fractions of the frame). The defaults in `pedestrian_crossing.py`
-(`ZoneConfig`) and `four_way_intersection.py` (`DEFAULT_ZONES`) are calibrated
-for the two Urban Tracker sequences; recalibrate them when using other
-cameras. This mirrors real deployments, where each camera view is zoned once
-at installation time.
+**Zone calibration:** real mode counts objects inside configurable
+fractional detection zones (`ZoneConfig` in `pedestrian_crossing.py`,
+`DEFAULT_ZONES` in `four_way_intersection.py`), calibrated here for the
+two Urban Tracker sequences. Recalibrate per camera — exactly as
+commercial video-detection systems are zoned once at installation.
 
-## 💡 Why this saves fuel and time
-
-Fixed signal plans burn fuel three ways: vehicles idle at red lights that
-protect empty roads, they re-accelerate after unnecessary stops, and
-pedestrians get long fixed cycles regardless of demand. Every demo case shows
-the same principle from a different angle: **detection replaces the timer**.
-The four-way simulation displays live counters (average wait per axis, number
-of demand-driven early switches) you can point at during the presentation.
+## Related work
 
 Published evaluations of YOLO-based adaptive signal control report reduced
 idle time and fuel consumption at intersections — see
 [IIETA 2024](https://iieta.org/journals/ts/paper/10.18280/ts.410407),
 [IJERT](https://www.ijert.org/smart-traffic-surveillance-system-with-adaptive-traffic-control-signal-using-yolo),
 and [IJRASET 2025](https://www.ijraset.com/best-journal/ai-driven-emergency-vehicle-detection-for-signal-optimization-using-yolov8)
-for comparable systems (up to ~95 % detection accuracy in field conditions).
+for comparable systems (up to ~95 % detection accuracy in field
+conditions). The demo footage is from the peer-reviewed Urban Tracker
+dataset (WACV 2014), so detection results are reproducible against
+published ground truth.
 
-## 🏗️ Architecture
-
-```
-demo.py                     ← single entry point: --case {1,2,3} --mode {simulation,real}
-├── pedestrian_crossing.py  ← Case 1: PedestrianSignalController + sim + real (shadow)
-├── smart_traffic_system.py ← Case 2: detector, queue analyzer, sim + real
-│   ├── traffic_core.py     ←   TrafficLightController + statistics
-│   ├── counter.py          ←   per-frame / cumulative counting
-│   └── sorter.py           ←   queue ordering by stop-line distance
-├── four_way_intersection.py← Case 3: FourWayController + sim + real (shadow)
-└── video_downloader.py     ← demo-video fetching and synthetic fallbacks
-```
-
-Shared design decisions:
-
-- **Every controller takes an injectable clock** (`time_func`) — simulations
-  drive it with simulated time (deterministic, seedable), real mode with the
-  video frame clock, tests with a fake clock.
-- **Safety invariants are structural**: yellow and all-red phases are states
-  in the machine, not timers bolted on; no code path can jump green → green.
-- **Detection is zone-based and debounced** (rolling presence windows), so a
-  single missed frame never flickers the signal plan.
-- YOLOv8n runs on GPU when available and **falls back to CPU automatically**.
-
-## 🧪 Testing
-
-```bash
-# Core suites (no YOLO weights or videos needed) — controller state machines,
-# simulation physics, zone logic, regressions
-pytest tests/test_traffic_system.py tests/test_pedestrian_crossing.py tests/test_four_way.py -v
-
-# Integration tests (require ultralytics + video files)
-pytest tests/test_animation_run.py -v
-```
-
-## 📦 Requirements
+## Requirements & troubleshooting
 
 ```
-opencv-python>=4.8.0
-numpy>=1.24.0
-pytest>=7.4.0
-ultralytics>=8.0.0
+opencv-python>=4.8.0   numpy>=1.24.0   pytest>=7.4.0   ultralytics>=8.0.0
 ```
 
-Ultralytics auto-installs PyTorch (CPU build works fine — YOLOv8n runs
-~5–15 FPS on CPU, 30–60 FPS with a GPU). YOLOv8n weights (~6 MB) ship in
-`weights/` and re-download automatically if missing.
-
-## 🐛 Troubleshooting
-
-- **No display window**: use `--no-display` for headless runs; on remote
-  servers ensure X11 forwarding.
-- **Slow real mode**: expected on CPU — YOLOv8n at ~5–15 FPS is still fully
+- Ultralytics auto-installs PyTorch (CPU build works; a GPU makes real
+  mode real-time) and the `lap` tracker dependency on first use. YOLOv8n
+  weights (~6 MB) ship in `weights/` and re-download automatically.
+- **No display window?** Use `--no-display`, or ensure X11 forwarding on
+  remote machines. If OpenCV windows fail after installing other packages,
+  check that `opencv-python-headless` has not shadowed `opencv-python`.
+- **Slow real mode?** Expected on CPU (~5–15 FPS) — still fully
   demonstrable; use a GPU for real-time.
-- **Missing videos**: `demo.py` re-downloads case videos; `road1/road2` fall
-  back to synthesized clips via `python video_downloader.py`.
 
-## 📄 License
+## License
 
-See LICENSE file. Demo footage: Urban Tracker sequences are a published
-research dataset (cite Jodoin et al., WACV 2014); Mixkit clips are under the
-Mixkit Free License.
+See LICENSE. Demo footage: Urban Tracker sequences are a published
+research dataset (cite Jodoin et al., WACV 2014); Mixkit clips are under
+the Mixkit Free License.
