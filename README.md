@@ -341,6 +341,29 @@ Camera/sensor-actuated adaptive signals are proven in production:
   near/mid-range vehicles reliable, distant ones missed, matching the
   Phase 2 hardening plan (GPU + larger model + local fine-tuning).
 
+### Dataset tooling
+
+```bash
+python download_datasets.py          # fetch everything obtainable without an account
+python download_datasets.py --list   # show the plan + the account-gated remainder
+python dataset_builder.py --build    # standardize whatever is present
+python dataset_builder.py --index    # list demo-ready sequences
+```
+
+`download_datasets.py` fetches the freely downloadable sets into
+`datasets/` (gitignored): Ko-PER sequences, the DAWN archive, MIT Traffic
+ground truth (its video clips are no longer online), with atomic writes
+and resume-by-rerun. Account-gated sets (AAU RainSnow via Kaggle, inD via
+academic request, UA-DETRAC mirrors) are listed for manual download.
+
+`dataset_builder.py` converts every dataset's own shape — Ko-PER zips of
+per-camera PNG frame folders, RainSnow RGB+thermal video pairs, DAWN
+weather-binned stills, Urban Tracker AVIs — into one uniform layout:
+`datasets/standardized/<dataset>/<sequence>/video.mp4 + meta.json`
+(fps/resolution/frame-count probed automatically). Point it at your
+Kaggle download with `--rainsnow <path>`, then run any sequence directly:
+`python demo.py --case 3 --mode real --video <standardized path>`.
+
 ### Further crossing / intersection datasets for system testing
 
 - **[MIT Traffic](https://mmlab.ie.cuhk.edu.hk/datasets/mit_traffic/index.html)** —

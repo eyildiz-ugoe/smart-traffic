@@ -37,3 +37,6 @@ Thumbs.db
 
 # Secrets
 .env
+
+# Downloaded datasets (fetched via download_datasets.py)
+datasets/
