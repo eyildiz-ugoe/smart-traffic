@@ -498,24 +498,31 @@ class PedestrianCrossingSimulation:
 
     # -- rendering ---------------------------------------------------------
     def _draw_ped_signal(self, frame: "np.ndarray", ped_signal: str) -> None:
-        # Aligned with the crosswalk it controls, and labelled, so there is
-        # no doubt which lamp this is.
-        x = self.road._lane_right + 22
-        y = (self.crosswalk_top + self.crosswalk_bottom) // 2 - 26
-        mid = (self.crosswalk_top + self.crosswalk_bottom) // 2
-        cv2.line(frame, (self.road._lane_right, mid), (x, mid), (150, 150, 150), 2)
-        cv2.rectangle(frame, (x, y), (x + 92, y + 52), (45, 45, 45), -1)
-        from demo_ui import draw_text
+        # Two-lamp pedestrian housing in the same style and right-edge column
+        # as the car housing, vertically centred on the crosswalk it controls;
+        # the connector line ties it to the crossing without covering the
+        # pedestrian icons.
+        from demo_ui import draw_text, text_size
         from ui_text import T
 
-        color = {
-            "WALK": (0, 220, 0),
-            "CLEAR": (0, 200, 255),
-        }.get(ped_signal, (0, 0, 230))
-        label = T({"WALK": "WALK", "CLEAR": "CLEAR"}.get(ped_signal, "WAIT"))
-        cv2.circle(frame, (x + 22, y + 26), 14, color, -1)
-        draw_text(frame, label, (x + 40, y + 16), size=16)
-        draw_text(frame, T("pedestrian lamp"), (x + 46, y + 56), size=13,
+        w, h = 26, 46
+        x = self.frame_width - 60
+        mid = (self.crosswalk_top + self.crosswalk_bottom) // 2
+        y = mid - h // 2
+        # Start past the kerbside waiting spot so the line never strikes
+        # through a waiting pedestrian icon.
+        cv2.line(frame, (self._right_wait_x + 14, mid), (x, mid), (150, 150, 150), 2)
+        cv2.rectangle(frame, (x, y), (x + w, y + h), (38, 38, 42), -1)
+        cv2.rectangle(frame, (x, y), (x + w, y + h), (200, 200, 200), 1)
+        walking = ped_signal in ("WALK", "CLEAR")
+        walk_color = (0, 200, 255) if ped_signal == "CLEAR" else (0, 200, 0)
+        cv2.circle(frame, (x + w // 2, y + 13), 8,
+                   (70, 70, 70) if walking else (0, 0, 220), -1)
+        cv2.circle(frame, (x + w // 2, y + 33), 8,
+                   walk_color if walking else (70, 70, 70), -1)
+        state = T({"WALK": "WALK", "CLEAR": "CLEAR"}.get(ped_signal, "WAIT"))
+        draw_text(frame, state, (x - text_size(state, 15)[0] - 8, mid - 9), size=15)
+        draw_text(frame, T("pedestrian lamp"), (x + w // 2, y + h + 12), size=13,
                   color=(200, 200, 200), center=True)
 
     def render(self, status: Dict[str, object]) -> "np.ndarray":
