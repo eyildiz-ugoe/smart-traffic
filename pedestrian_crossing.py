@@ -498,7 +498,12 @@ class PedestrianCrossingSimulation:
 
     # -- rendering ---------------------------------------------------------
     def _draw_ped_signal(self, frame: "np.ndarray", ped_signal: str) -> None:
-        x, y = self.road._lane_right + 14, self.crosswalk_top - 66
+        # Aligned with the crosswalk it controls, and labelled, so there is
+        # no doubt which lamp this is.
+        x = self.road._lane_right + 22
+        y = (self.crosswalk_top + self.crosswalk_bottom) // 2 - 26
+        mid = (self.crosswalk_top + self.crosswalk_bottom) // 2
+        cv2.line(frame, (self.road._lane_right, mid), (x, mid), (150, 150, 150), 2)
         cv2.rectangle(frame, (x, y), (x + 92, y + 52), (45, 45, 45), -1)
         from demo_ui import draw_text
         from ui_text import T
@@ -510,6 +515,8 @@ class PedestrianCrossingSimulation:
         label = T({"WALK": "WALK", "CLEAR": "CLEAR"}.get(ped_signal, "WAIT"))
         cv2.circle(frame, (x + 22, y + 26), 14, color, -1)
         draw_text(frame, label, (x + 40, y + 16), size=16)
+        draw_text(frame, T("pedestrian lamp"), (x + 46, y + 56), size=13,
+                  color=(200, 200, 200), center=True)
 
     def render(self, status: Dict[str, object]) -> "np.ndarray":
         from smart_traffic_system import draw_compact_signal
@@ -556,17 +563,25 @@ class PedestrianCrossingSimulation:
             ours = self.road.total_wait + self.ped_wait_total
             if base > 1.0:
                 pct = 100.0 * (base - ours) / base
-                info.append(T("Waiting vs fixed {c} s cycle: {a} s vs {b} s ({p}% saved)").format(
-                    c=40, a=f"{ours:.0f}", b=f"{base:.0f}", p=f"{pct:+.0f}"))
+                savings = T("Waiting vs fixed {c} s cycle: {a} s vs {b} s ({p}% saved)").format(
+                    c=40, a=f"{ours:.0f}", b=f"{base:.0f}", p=f"{pct:+.0f}")
+                # Split the long line so the panel never reaches the road.
+                if ": " in savings:
+                    head, tail = savings.split(": ", 1)
+                    info.append(head + ":")
+                    info.append("   " + tail)
+                else:
+                    info.append(savings)
         from demo_ui import text_size
 
-        panel_w = 12 + max(text_size(t, 15)[0] for t in info)
+        panel_w = 12 + max(text_size(t, 13)[0] for t in info)
+        panel_w = min(panel_w, self.road._lane_left - 24)
         overlay = frame.copy()
-        cv2.rectangle(overlay, (8, 8), (8 + panel_w + 12, 16 + 22 * len(info)),
+        cv2.rectangle(overlay, (8, 8), (8 + panel_w + 12, 14 + 20 * len(info)),
                       (20, 20, 20), -1)
         cv2.addWeighted(overlay, 0.65, frame, 0.35, 0, frame)
         for idx, text in enumerate(info):
-            draw_text(frame, text, (16, 12 + idx * 22), size=15)
+            draw_text(frame, text, (16, 11 + idx * 20), size=13)
         return frame
 
     # -- loop ---------------------------------------------------------------

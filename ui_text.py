@@ -26,6 +26,7 @@ TR = {
     'CLEAR': 'BİTİYOR',
     'PARKED': 'PARK HALİNDE',
     'All red (safety clearance)': 'Hepsi kırmızı (güvenlik aralığı)',
+    'pedestrian lamp': 'yaya lambası',
     # case 1
     'Cars: GREEN': 'Araçlar: YEŞİL',
     'Cars: YELLOW': 'Araçlar: SARI',
