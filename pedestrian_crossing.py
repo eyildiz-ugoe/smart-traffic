@@ -367,6 +367,9 @@ class PedestrianCrossingSimulation:
         self._left_wait_x = self.road._lane_left - 26
         self._right_wait_x = self.road._lane_right + 26
 
+        # Break the centre-line dashes at the crosswalk band, the same way
+        # Case 3 breaks them at the junction box.
+        self.road.line_gap = (self.crosswalk_top - 6, self.crosswalk_bottom + 6)
         self._background = self._create_background()
 
     # -- world ------------------------------------------------------------

@@ -845,33 +845,50 @@ class SimulatedRoad:
             self._lane_left = 0
             self._lane_right = merge_exit
 
+        #: Range along the travel axis where the centre line is suppressed
+        #: (the crosswalk band in Case 1, the junction box in Case 2), so
+        #: markings break at conflict areas exactly like Case 3.
+        self.line_gap: Tuple[int, int] | None = None
         self.background = self._create_background()
 
+    def _dashed_center_line(self, frame: np.ndarray) -> None:
+        # Same dash rhythm and colour as Case 3's centre lines.
+        dash, gap = 18, 16
+        color = (170, 170, 170)
+        if self.orientation == "vertical":
+            x = self.frame_width // 2
+            for y in range(0, self.frame_height, dash + gap):
+                if self.line_gap and self.line_gap[0] <= y <= self.line_gap[1]:
+                    continue
+                cv2.line(frame, (x, y), (x, min(y + dash, self.frame_height)), color, 2)
+        else:
+            y = self.frame_height // 2
+            for x in range(self._lane_left, self.frame_width, dash + gap):
+                if self.line_gap and self.line_gap[0] <= x <= self.line_gap[1]:
+                    continue
+                cv2.line(frame, (x, y), (min(x + dash, self.frame_width), y), color, 2)
+
     def _create_background(self) -> np.ndarray:
-        frame = np.zeros((self.frame_height, self.frame_width, 3), dtype=np.uint8)
-        road_color = (65, 65, 65)
-        line_color = (200, 200, 200)
+        # Same surface tones and marking grammar as Case 3: 24-grey ground,
+        # 66-grey road, dashed centre line, thick white stop line.
+        frame = np.full((self.frame_height, self.frame_width, 3), 24, dtype=np.uint8)
+        road_color = (66, 66, 66)
+        stop_color = (230, 230, 230)
 
         if self.orientation == "vertical":
             lane_left = self._lane_left
             lane_right = self._lane_right
             cv2.rectangle(frame, (lane_left, 0), (lane_right, self.frame_height), road_color, -1)
-            cv2.line(frame, (self.frame_width // 2, 0), (self.frame_width // 2, self.frame_height), line_color, 2)
-            cv2.line(frame, (lane_left, self.stop_line), (lane_right, self.stop_line), (0, 0, 0), 2)
+            self._dashed_center_line(frame)
+            cv2.line(frame, (lane_left, self.stop_line), (lane_right, self.stop_line), stop_color, 3)
         else:
             lane_top = self.frame_height // 2 - 60
             lane_bottom = self.frame_height // 2 + 60
-            cv2.rectangle(frame, (self._lane_left, lane_top), (self._lane_right, lane_bottom), road_color, -1)
-            cv2.line(frame, (self._lane_left, self.frame_height // 2), (self._lane_right, self.frame_height // 2), line_color, 2)
-            cv2.line(frame, (self.stop_line, lane_top), (self.stop_line, lane_bottom), (0, 0, 0), 2)
-            merge_mark_right = min(self.frame_width - 1, self._lane_right + 20)
-            cv2.line(
-                frame,
-                (merge_mark_right, lane_top),
-                (merge_mark_right, lane_bottom),
-                (30, 30, 30),
-                2,
-            )
+            # The drawn surface continues to the frame edge — vehicles keep
+            # driving past _lane_right until they despawn.
+            cv2.rectangle(frame, (self._lane_left, lane_top), (self.frame_width, lane_bottom), road_color, -1)
+            self._dashed_center_line(frame)
+            cv2.line(frame, (self.stop_line, lane_top), (self.stop_line, lane_bottom), stop_color, 3)
 
         return frame
 
@@ -1324,6 +1341,13 @@ class SimulationTrafficSystem:
         self.baseline = Case2Baseline(
             resolved_seed, frame_size, main_spawn_rate, side_spawn_rate
         )
+        # Break each centre line at the junction box (standard grammar).
+        junction_top = frame_size[0] // 2 - 60
+        junction_bottom = frame_size[0] // 2 + 60
+        self.road1.line_gap = (junction_top - 6, junction_bottom + 6)
+        self.road1.background = self.road1._create_background()
+        self.road2.line_gap = (self.road1._lane_left - 6, self.road1._lane_right + 6)
+        self.road2.background = self.road2._create_background()
         self._scene_background = self._create_scene_background()
 
         def _line_ratio(position: int, dimension: int) -> float:
@@ -1381,7 +1405,7 @@ class SimulationTrafficSystem:
     def _create_scene_background(self) -> np.ndarray:
         """Combine road backgrounds into a single intersection view."""
 
-        base = np.full(self.frame_shape, 20, dtype=np.uint8)
+        base = np.full(self.frame_shape, 24, dtype=np.uint8)
         road_overlay = np.maximum(self.road1.background, self.road2.background)
         mask = road_overlay > 0
         base[mask] = road_overlay[mask]
@@ -1511,9 +1535,6 @@ class SimulationTrafficSystem:
                 frame = self._scene_background.copy()
                 self.road1.draw_vehicles(frame)
                 self.road2.draw_vehicles(frame)
-
-                frame = draw_vehicle_annotations(frame, metrics1)
-                frame = draw_vehicle_annotations(frame, metrics2)
 
                 frame = draw_case2_hud(
                     frame, self._current_signal, metrics1, metrics2,
