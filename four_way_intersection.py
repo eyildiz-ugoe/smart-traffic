@@ -507,11 +507,33 @@ class FourWaySimulation:
         cv2.addWeighted(overlay, 0.28, frame, 0.72, 0, frame)
         for x0, y0, x1, y1 in zones:
             cv2.rectangle(frame, (x0, y0), (x1, y1), (160, 160, 90), 1)
+        # Dashed safe-stop boundary at the outer edge of every dilemma band
+        # (same grammar as the other cases).
+        def dashed_line(p0, p1, horizontal):
+            length = (p1[0] - p0[0]) if horizontal else (p1[1] - p0[1])
+            step = max(8, px(18.0))
+            dash = max(4, px(9.0))
+            pos = 0
+            while pos < length:
+                if horizontal:
+                    cv2.line(frame, (p0[0] + pos, p0[1]),
+                             (min(p0[0] + pos + dash, p1[0]), p0[1]), (0, 200, 255), 2)
+                else:
+                    cv2.line(frame, (p0[0], p0[1] + pos),
+                             (p0[0], min(p0[1] + pos + dash, p1[1])), (0, 200, 255), 2)
+                pos += step
+        dashed_line((px(c - rw), px(c - so - dil)), (px(c), px(c - so - dil)), True)   # N
+        dashed_line((px(c), px(c + so + dil)), (px(c + rw), px(c + so + dil)), True)   # S
+        dashed_line((px(c + so + dil), px(c - rw)), (px(c + so + dil), px(c)), False)  # E
+        dashed_line((px(c - so - dil), px(c)), (px(c - so - dil), px(c + rw)), False)  # W
         from ui_text import T
-        self._text(frame, T("detection zone"), (c - rw - 4.0, c - so - det - 8.0),
-                   color=(190, 190, 130), mult=0.75)
-        self._text(frame, T("dilemma zone"), (c + so + 6.0, c + rw + 10.0),
-                   color=(150, 200, 230), mult=0.75)
+        # Labels below the intersection, clear of the HUD panel.
+        self._text_centered(frame, T("detection zone"), c,
+                            c + so + det + 16.0, color=(210, 210, 150), mult=0.75)
+        self._text_centered(frame, T("dilemma zone"), c,
+                            c + so + dil + 14.0, color=(220, 240, 240), mult=0.75)
+        self._text_centered(frame, T("safe-stop line"), c,
+                            c + so + dil - 10.0, color=(0, 200, 255), mult=0.75)
 
         # Stop lines (one per approach, on the incoming half of each road).
         stop_th = self._thickness(1.5)

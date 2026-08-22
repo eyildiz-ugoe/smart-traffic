@@ -1414,6 +1414,17 @@ class SimulationTrafficSystem:
         for y in range(lane_top, lane_bottom, 18):
             cv2.line(base, (dil2[0], y), (dil2[0], min(y + 9, lane_bottom)),
                      (0, 200, 255), 2)
+        # Standard zone labels, centred inside the vertical road.
+        from demo_ui import draw_text
+        from ui_text import T
+
+        cx = (r1._lane_left + r1._lane_right) // 2
+        draw_text(base, T("detection zone"), (cx, det1[1] + 8),
+                  size=13, color=(210, 210, 150), center=True)
+        draw_text(base, T("safe-stop line"), (cx, dil1[1] - 10),
+                  size=13, color=(0, 200, 255), center=True)
+        draw_text(base, T("dilemma zone"), (cx, dil1[1] + 14),
+                  size=13, color=(220, 240, 240), center=True)
         return base
 
     def _road_dilemma(self, road: SimulatedRoad) -> bool:

@@ -408,12 +408,15 @@ class PedestrianCrossingSimulation:
         from demo_ui import draw_text
         from ui_text import T
 
-        draw_text(frame, T("safe-stop line"), (self.road._lane_right + 8, boundary - 6),
-                  size=13, color=(0, 200, 255))
-        draw_text(frame, T("dilemma zone"), (self.road._lane_left + 6, self.road.stop_line - 22),
-                  size=13, color=(200, 230, 230))
-        draw_text(frame, T("detection zone"), (self.road._lane_left + 6, det_top + 2),
-                  size=13, color=(190, 190, 130))
+        cx = (self.road._lane_left + self.road._lane_right) // 2
+        draw_text(frame, T("detection zone"), (cx, det_top + 10),
+                  size=13, color=(210, 210, 150), center=True)
+        draw_text(frame, T("safe-stop line"), (cx, boundary - 10),
+                  size=13, color=(0, 200, 255), center=True)
+        draw_text(frame, T("dilemma zone"), (cx, boundary + 14),
+                  size=13, color=(220, 240, 240), center=True)
+        # Direction-of-travel arrow at the road entry (standard grammar).
+        cv2.arrowedLine(frame, (cx, 10), (cx, 44), (205, 205, 205), 2, tipLength=0.35)
         return frame
 
     def _maybe_spawn_pedestrian(self, dt: float) -> None:
@@ -509,7 +512,7 @@ class PedestrianCrossingSimulation:
         draw_text(frame, label, (x + 40, y + 16), size=16)
 
     def render(self, status: Dict[str, object]) -> "np.ndarray":
-        from smart_traffic_system import draw_traffic_light
+        from smart_traffic_system import draw_compact_signal
 
         frame = self._background.copy()
         self.road.draw_vehicles(frame)
@@ -520,7 +523,8 @@ class PedestrianCrossingSimulation:
             cv2.circle(frame, center, 8, color, -1)
             cv2.circle(frame, center, 8, (30, 30, 30), 1)
 
-        frame = draw_traffic_light(frame, str(status["car_signal"]), "top-right")
+        draw_compact_signal(frame, str(status["car_signal"]),
+                            (self.frame_width - 60, 14), "cars")
         self._draw_ped_signal(frame, str(status["ped_signal"]))
 
         from demo_ui import draw_text
@@ -554,6 +558,13 @@ class PedestrianCrossingSimulation:
                 pct = 100.0 * (base - ours) / base
                 info.append(T("Waiting vs fixed {c} s cycle: {a} s vs {b} s ({p}% saved)").format(
                     c=40, a=f"{ours:.0f}", b=f"{base:.0f}", p=f"{pct:+.0f}"))
+        from demo_ui import text_size
+
+        panel_w = 12 + max(text_size(t, 15)[0] for t in info)
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (8, 8), (8 + panel_w + 12, 16 + 22 * len(info)),
+                      (20, 20, 20), -1)
+        cv2.addWeighted(overlay, 0.65, frame, 0.35, 0, frame)
         for idx, text in enumerate(info):
             draw_text(frame, text, (16, 12 + idx * 22), size=15)
         return frame
