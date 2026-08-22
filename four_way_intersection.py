@@ -912,6 +912,12 @@ class RealFourWayIntersection:
         out = frame.copy()
         signals: Dict[str, str] = status["signals"]  # type: ignore[assignment]
 
+        # Monitored road areas are tinted in each approach's colour (painted
+        # pavement look) before any boxes, so detections stay crisp on top.
+        from demo_ui import tint_zone
+        for name, rect in zone_px.items():
+            tint_zone(out, rect, ZONE_COLORS[name])
+
         def in_any_zone(det) -> bool:
             cx, cy = det.center
             return any(zx <= cx <= zx + zw and zy <= cy <= zy + zh
@@ -935,7 +941,6 @@ class RealFourWayIntersection:
         for name, (zx, zy, zw, zh) in zone_px.items():
             signal = signals[name]
             color = {"GREEN": (0, 210, 0), "YELLOW": (0, 210, 230)}.get(signal, (0, 0, 220))
-            cv2.rectangle(out, (zx, zy), (zx + zw, zy + zh), ZONE_COLORS[name], 2)
             draw_text(out, f"{T(APPROACH_NAMES[name])}: {counts[name]} [{T(signal)}]",
                       (zx + 4, zy + 4), size=13, color=color)
 

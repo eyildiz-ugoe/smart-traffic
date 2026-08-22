@@ -875,13 +875,15 @@ class RealPedestrianCrossing:
         from smart_traffic_system import draw_traffic_light
 
         out = frame.copy()
-        zx, zy, zw, zh = veh_zone
-        cv2.rectangle(out, (zx, zy), (zx + zw, zy + zh), (255, 160, 0), 2)
-        from demo_ui import draw_text as _dt
+        # The monitored road areas are tinted in the zone colour (painted
+        # pavement look) instead of outlined boxes over the video.
+        from demo_ui import draw_text as _dt, tint_zone
         from ui_text import T as _T
+        zx, zy, zw, zh = veh_zone
+        tint_zone(out, veh_zone, (255, 160, 0))
         _dt(out, _T("detection zone").upper(), (zx + 4, zy + 4), size=13, color=(255, 160, 0))
         zx, zy, zw, zh = ped_zone
-        cv2.rectangle(out, (zx, zy), (zx + zw, zy + zh), (0, 220, 255), 2)
+        tint_zone(out, ped_zone, (0, 220, 255))
         _dt(out, (_T("ped") + " " + _T("detection zone")).upper(), (zx + 4, zy + 4),
             size=13, color=(0, 220, 255))
 

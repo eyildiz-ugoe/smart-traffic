@@ -38,6 +38,25 @@ CONTROLS_HINT = "SPACE pause   F fullscreen   Q quit"
 _ESC = 27
 _SPACE = 32
 
+def tint_zone(frame, rect, color, alpha: float = 0.25) -> None:
+    """Tint the road area of a detection zone directly in the zone's colour.
+
+    Real-mode standard: monitored regions read as coloured pavement, not as
+    boxes drawn over the video. Blends in place on the zone ROI only.
+    """
+
+    if np is None:
+        return
+    x, y, w, h = rect
+    fh, fw = frame.shape[:2]
+    x0, y0 = max(0, int(x)), max(0, int(y))
+    x1, y1 = min(fw, int(x + w)), min(fh, int(y + h))
+    if x1 <= x0 or y1 <= y0:
+        return
+    roi = frame[y0:y1, x0:x1]
+    overlay = np.full_like(roi, color)
+    cv2.addWeighted(overlay, alpha, roi, 1.0 - alpha, 0, roi)
+
 # ---------------------------------------------------------------------------
 # Unicode-capable text rendering.
 #
