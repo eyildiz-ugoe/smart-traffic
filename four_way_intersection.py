@@ -158,6 +158,27 @@ class FourWayController:
         }
 
 
+class FixedCycleController:
+    """The dumb baseline: 25 s per axis + yellow + all-red, demand-blind."""
+
+    GREEN = 25.0
+    YELLOW = 3.0
+    ALL_RED = 1.5
+
+    def signals(self, now: float) -> Dict[str, str]:
+        cycle = self.GREEN + self.YELLOW + self.ALL_RED
+        phase = now % (2 * cycle)
+        axis, offset = ("NS", phase) if phase < cycle else ("EW", phase - cycle)
+        if offset < self.GREEN:
+            state = "GREEN"
+        elif offset < self.GREEN + self.YELLOW:
+            state = "YELLOW"
+        else:
+            state = "RED"
+        return {name: (state if AXIS_OF[name] == axis else "RED")
+                for name in APPROACHES}
+
+
 # ---------------------------------------------------------------------------
 # Simulation mode
 # ---------------------------------------------------------------------------
@@ -219,6 +240,8 @@ class Approach:
     clear_distance: float = 160.0
     min_gap: float = 12.0
     vehicles: List[ApproachVehicle] = field(default_factory=list)
+    #: Cumulative vehicle-seconds spent waiting (for baseline comparison).
+    total_wait: float = 0.0
 
     def maybe_spawn(self, rng: random.Random, dt: float) -> None:
         if rng.random() >= self.spawn_rate * dt:
@@ -248,6 +271,7 @@ class Approach:
             moved = target < vehicle.distance - 1e-9
             if not moved and vehicle.distance > 0:
                 vehicle.wait_time += dt
+                self.total_wait += dt
             vehicle.distance = target
             leader_tail = vehicle.distance + vehicle.length
         self.vehicles = [v for v in self.vehicles if v.distance > -self.clear_distance]
@@ -293,16 +317,25 @@ class FourWaySimulation:
         # in LOGICAL_SIZE coordinates, so behavior is resolution-independent.
         self.size = size if size is not None else detect_display_size()
         self.scale = self.size / LOGICAL_SIZE
-        self.rng = random.Random(seed)
 
         # Asymmetric defaults make the demo point obvious: the main NS road
         # is busy while EW only sees the occasional car, so EW red time is
         # skipped whenever nothing is waiting there.
         rates = spawn_rates or {"N": 0.16, "S": 0.14, "E": 0.05, "W": 0.04}
+        resolved_seed = seed if seed is not None else random.randrange(1 << 30)
+        self.rng = random.Random(resolved_seed)
         self.approaches: Dict[str, Approach] = {
             name: Approach(name=name, spawn_rate=rates.get(name, 0.1))
             for name in APPROACHES
         }
+        # Invisible twin: identical traffic (mirrored random stream) under a
+        # fixed 25 s cycle, so the HUD can show the measured saving live.
+        self._baseline_rng = random.Random(resolved_seed)
+        self.baseline_approaches: Dict[str, Approach] = {
+            name: Approach(name=name, spawn_rate=rates.get(name, 0.1))
+            for name in APPROACHES
+        }
+        self.baseline_controller = FixedCycleController()
 
         self._sim_time = 0.0
         self.controller = FourWayController(time_func=lambda: self._sim_time)
@@ -374,6 +407,12 @@ class FourWaySimulation:
     def counts(self) -> Dict[str, int]:
         return {name: app.demand_count() for name, app in self.approaches.items()}
 
+    def adaptive_wait(self) -> float:
+        return sum(app.total_wait for app in self.approaches.values())
+
+    def baseline_wait(self) -> float:
+        return sum(app.total_wait for app in self.baseline_approaches.values())
+
     def step(self, dt: float) -> Dict[str, object]:
         self._sim_time += dt
         for approach in self.approaches.values():
@@ -382,6 +421,13 @@ class FourWaySimulation:
         signals: Dict[str, str] = status["signals"]  # type: ignore[assignment]
         for name, approach in self.approaches.items():
             approach.step(signals[name], dt)
+
+        # Twin world under the fixed-time plan (same spawn stream).
+        baseline_signals = self.baseline_controller.signals(self._sim_time)
+        for approach in self.baseline_approaches.values():
+            approach.maybe_spawn(self._baseline_rng, dt)
+        for name, approach in self.baseline_approaches.items():
+            approach.step(baseline_signals[name], dt)
         return status
 
     # -- rendering -----------------------------------------------------------
@@ -414,6 +460,24 @@ class FourWaySimulation:
                     self._thickness(),
                 )
             pos += dash + gap
+        # Detection zones: the regions the controller actually watches
+        # (stop line back to detection_length), shaded per approach.
+        det = 110.0  # matches Approach.detection_length
+        overlay = frame.copy()
+        zones = [
+            (px(c - rw), px(c - so - det), px(c), px(c - so)),          # N (west half)
+            (px(c), px(c + so), px(c + rw), px(c + so + det)),          # S (east half)
+            (px(c + so), px(c - rw), px(c + so + det), px(c)),          # E (north half)
+            (px(c - so - det), px(c), px(c - so), px(c + rw)),          # W (south half)
+        ]
+        for x0, y0, x1, y1 in zones:
+            cv2.rectangle(overlay, (x0, y0), (x1, y1), (120, 120, 60), -1)
+        cv2.addWeighted(overlay, 0.25, frame, 0.75, 0, frame)
+        for x0, y0, x1, y1 in zones:
+            cv2.rectangle(frame, (x0, y0), (x1, y1), (160, 160, 90), 1)
+        self._text(frame, "detection zone", (c - rw - 4.0, c - so - det - 8.0),
+                   color=(190, 190, 130), mult=0.75)
+
         # Stop lines (one per approach, on the incoming half of each road).
         stop_th = self._thickness(1.5)
         cv2.line(frame, (px(c - rw), px(c - so)), (px(c), px(c - so)), (230, 230, 230), stop_th)  # N
@@ -521,6 +585,14 @@ class FourWaySimulation:
         remaining = status["time_remaining"]
         if remaining is not None:
             info.insert(1, f"Phase ends in: {float(remaining):.1f}s")
+        baseline = self.baseline_wait()
+        if baseline > 1.0:
+            adaptive = self.adaptive_wait()
+            pct = 100.0 * (baseline - adaptive) / baseline
+            info.append(
+                f"Waiting vs fixed 25s timer: {adaptive:.0f}s vs {baseline:.0f}s "
+                f"({pct:+.0f}% saved)"
+            )
 
         # Translucent panel sized to the widest line, so no resolution or
         # wording change can push text outside the background.
@@ -604,17 +676,25 @@ class FourWaySimulation:
                     (self.approaches["N"].average_wait() + self.approaches["S"].average_wait()) / 2,
                     (self.approaches["E"].average_wait() + self.approaches["W"].average_wait()) / 2,
                 )
+                baseline = self.baseline_wait()
+                adaptive = self.adaptive_wait()
+                saved_line = "Twin fixed-timer world: warming up"
+                if baseline > 1.0:
+                    pct = 100.0 * (baseline - adaptive) / baseline
+                    saved_line = (
+                        f"Waiting vs fixed 25 s timer: {adaptive:.0f} s vs "
+                        f"{baseline:.0f} s  ({pct:+.0f}%)"
+                    )
                 card_action = show_end_card(
                     window_name,
                     "Case 3 - Four-Way Intersection",
                     [
                         f"Simulated time: {self._sim_time:.0f} s",
-                        f"Signal switches: {controller.total_switches}",
-                        f"Demand-driven (no timer): {controller.early_switches} "
-                        f"of {controller.total_switches}",
-                        f"Average wait  North-South: {waits[0]:.1f} s   "
-                        f"East-West: {waits[1]:.1f} s",
-                        "An empty road never holds a green hostage.",
+                        f"Signal switches: {controller.total_switches} "
+                        f"(demand-driven: {controller.early_switches})",
+                        saved_line,
+                        "Identical cars ran in an invisible twin world under",
+                        "a dumb fixed timer - that is the saving.",
                     ],
                 )
                 action = card_action or action
@@ -779,15 +859,26 @@ class RealFourWayIntersection:
         out = frame.copy()
         signals: Dict[str, str] = status["signals"]  # type: ignore[assignment]
 
+        def in_any_zone(det) -> bool:
+            cx, cy = det.center
+            return any(zx <= cx <= zx + zw and zy <= cy <= zy + zh
+                       for zx, zy, zw, zh in zone_px.values())
+
+        # Only detections the controller actually counts get bold boxes;
+        # out-of-zone hits (road markings, signs, far background) stay a
+        # thin unobtrusive gray so they cannot be mistaken for demand.
         for det in active:
             x, y, w, h = det.bbox
-            cv2.rectangle(out, (x, y), (x + w, y + h), (80, 255, 120), 2)
+            if in_any_zone(det):
+                cv2.rectangle(out, (x, y), (x + w, y + h), (80, 255, 120), 2)
+            else:
+                cv2.rectangle(out, (x, y), (x + w, y + h), (150, 150, 150), 1)
         for det in parked:
             x, y, w, h = det.bbox
-            cv2.rectangle(out, (x, y), (x + w, y + h), (140, 140, 140), 2)
+            cv2.rectangle(out, (x, y), (x + w, y + h), (140, 140, 140), 1)
             cv2.putText(
-                out, "PARKED", (x, max(12, y - 6)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (140, 140, 140), 2,
+                out, "PARKED", (x, max(12, y - 4)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (140, 140, 140), 1, cv2.LINE_AA,
             )
 
         for name, (zx, zy, zw, zh) in zone_px.items():
@@ -796,23 +887,26 @@ class RealFourWayIntersection:
             cv2.rectangle(out, (zx, zy), (zx + zw, zy + zh), ZONE_COLORS[name], 2)
             cv2.putText(
                 out,
-                f"{APPROACH_NAMES[name]}: {counts[name]} cars [{signal}]",
-                (zx + 4, zy + 22),
+                f"{APPROACH_NAMES[name]}: {counts[name]} [{signal}]",
+                (zx + 4, zy + 16),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
+                0.45,
                 color,
-                2,
+                1,
+                cv2.LINE_AA,
             )
 
-        cv2.rectangle(out, (14, 14), (400, 120), (40, 40, 40), -1)
-        lines = [
-            "SHADOW MODE - adaptive plan",
-            f"{AXIS_NAMES[str(status['active_axis'])]} road: {status['phase']}",
-            f"Switches: {status['total_switches']} (demand-driven: {status['early_switches']})",
-            f"Parked cars ignored: {len(parked)}",
-        ]
-        for idx, text in enumerate(lines):
-            cv2.putText(out, text, (24, 40 + idx * 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        # Slim translucent top strip instead of a video-blocking box.
+        strip = out.copy()
+        cv2.rectangle(strip, (0, 0), (out.shape[1], 26), (20, 20, 20), -1)
+        cv2.addWeighted(strip, 0.6, out, 0.4, 0, out)
+        summary = (
+            f"SHADOW MODE   {AXIS_NAMES[str(status['active_axis'])]} {status['phase']}   "
+            f"switches {status['total_switches']} (demand {status['early_switches']})   "
+            f"parked ignored {len(parked)}"
+        )
+        cv2.putText(out, summary, (10, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                    (255, 255, 255), 1, cv2.LINE_AA)
         return out
 
     def run(

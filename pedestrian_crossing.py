@@ -242,6 +242,48 @@ class PedestrianSignalController:
         }
 
 
+class FixedPedCycleController:
+    """The dumb baseline: a walk phase every CYCLE seconds, demand-blind.
+
+    Exposes the same interface as PedestrianSignalController so the twin
+    simulation can swap it in unchanged.
+    """
+
+    CYCLE = 40.0
+    YELLOW = 3.0
+    ALL_RED = 2.5
+    WALK = 8.0
+    CLEAR = 4.0
+
+    def __init__(self, time_func: Callable[[], float] | None = None) -> None:
+        self._time_func = time_func or time.monotonic
+        self.pedestrians_served = 0
+        self.total_ped_wait = 0.0
+        self._last_cycle = -1
+
+    def update(self, pedestrian_waiting: bool, vehicle_in_dilemma_zone: bool = False,
+               vehicle_count: int = 0, crossing_occupied: bool = False) -> Dict[str, object]:
+        now = self._time_func()
+        cycle_index = int(now // self.CYCLE)
+        if cycle_index != self._last_cycle:
+            self._last_cycle = cycle_index
+            self.pedestrians_served += 1  # a walk phase runs every cycle
+        offset = now % self.CYCLE
+        if offset < self.YELLOW:
+            state, car, ped = "CAR_YELLOW", "YELLOW", "DONT_WALK"
+        elif offset < self.YELLOW + self.ALL_RED:
+            state, car, ped = "ALL_RED", "RED", "DONT_WALK"
+        elif offset < self.YELLOW + self.ALL_RED + self.WALK:
+            state, car, ped = "WALK", "RED", "WALK"
+        elif offset < self.YELLOW + self.ALL_RED + self.WALK + self.CLEAR:
+            state, car, ped = "PED_CLEARANCE", "RED", "CLEAR"
+        else:
+            state, car, ped = "CAR_GREEN", "GREEN", "DONT_WALK"
+        return {"state": state, "car_signal": car, "ped_signal": ped,
+                "time_remaining": None, "ped_wait_time": 0.0,
+                "pedestrians_served": self.pedestrians_served}
+
+
 # ---------------------------------------------------------------------------
 # Simulation mode
 # ---------------------------------------------------------------------------
@@ -273,6 +315,7 @@ class PedestrianCrossingSimulation:
         seed: Optional[int] = None,
         car_spawn_rate: float = 0.35,
         pedestrian_rate: float = 0.08,
+        _is_baseline: bool = False,
     ) -> None:
         if cv2 is None:  # pragma: no cover - requires optional dependency
             raise ImportError(
@@ -287,7 +330,8 @@ class PedestrianCrossingSimulation:
 
         self.fps = max(1, fps)
         self.frame_height, self.frame_width = frame_size
-        self.rng = random.Random(seed)
+        resolved_seed = seed if seed is not None else random.randrange(1 << 30)
+        self.rng = random.Random(resolved_seed)
         self.road = SimulatedRoad(
             "vertical",
             frame_size,
@@ -297,9 +341,24 @@ class PedestrianCrossingSimulation:
         )
         self.pedestrian_rate = max(0.0, pedestrian_rate)
         self.pedestrians: List[SimulatedPedestrian] = []
+        self.ped_wait_total = 0.0
 
         self._sim_time = 0.0
         self.controller = PedestrianSignalController(time_func=lambda: self._sim_time)
+
+        # Invisible twin: identical cars and pedestrians (mirrored random
+        # stream) under a demand-blind fixed 40 s cycle, so the HUD can
+        # display the measured saving live.
+        self.baseline: Optional["PedestrianCrossingSimulation"] = None
+        if not _is_baseline:
+            self.baseline = PedestrianCrossingSimulation(
+                fps=fps, frame_size=frame_size, seed=resolved_seed,
+                car_spawn_rate=car_spawn_rate, pedestrian_rate=pedestrian_rate,
+                _is_baseline=True,
+            )
+            self.baseline.controller = FixedPedCycleController(
+                time_func=lambda: self.baseline._sim_time
+            )
 
         # Crosswalk geometry: a band just downstream of the stop line.
         self.crosswalk_top = self.road.stop_line + 12
@@ -322,6 +381,27 @@ class PedestrianCrossingSimulation:
                 (210, 210, 210),
                 -1,
             )
+
+        # The decision region the controller watches: dilemma zone between
+        # the safe-stop boundary and the stop line, shaded like the other
+        # cases' detection zones.
+        boundary = int(self.road.stop_line - self.DILEMMA_ZONE_DEPTH)
+        overlay = frame.copy()
+        cv2.rectangle(
+            overlay,
+            (self.road._lane_left, boundary),
+            (self.road._lane_right, self.road.stop_line),
+            (60, 120, 120),
+            -1,
+        )
+        cv2.addWeighted(overlay, 0.30, frame, 0.70, 0, frame)
+        for x in range(self.road._lane_left, self.road._lane_right, 18):
+            cv2.line(frame, (x, boundary), (min(x + 9, self.road._lane_right), boundary),
+                     (0, 200, 255), 2)
+        cv2.putText(frame, "safe-stop line", (self.road._lane_right + 8, boundary + 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 200, 255), 1, cv2.LINE_AA)
+        cv2.putText(frame, "dilemma zone", (self.road._lane_left + 6, self.road.stop_line - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 220, 220), 1, cv2.LINE_AA)
         return frame
 
     def _maybe_spawn_pedestrian(self, dt: float) -> None:
@@ -396,6 +476,9 @@ class PedestrianCrossingSimulation:
         )
         self.road.step(str(status["car_signal"]), dt)
         self._update_pedestrians(str(status["ped_signal"]), dt)
+        self.ped_wait_total += dt * sum(1 for p in self.pedestrians if not p.walking)
+        if self.baseline is not None:
+            self.baseline.step(dt)
         return status
 
     # -- rendering ---------------------------------------------------------
@@ -438,8 +521,17 @@ class PedestrianCrossingSimulation:
         ]
         if remaining is not None:
             info.append(f"Phase ends in: {float(remaining):.1f}s")
-        if self.vehicle_in_dilemma_zone():
+        if status["state"] == "CAR_GREEN" and self.vehicle_in_dilemma_zone():
             info.append("Dilemma zone occupied - holding")
+        if self.baseline is not None:
+            base = self.baseline.road.total_wait + self.baseline.ped_wait_total
+            ours = self.road.total_wait + self.ped_wait_total
+            if base > 1.0:
+                pct = 100.0 * (base - ours) / base
+                info.append(
+                    f"Waiting vs fixed 40s cycle: {ours:.0f}s vs {base:.0f}s "
+                    f"({pct:+.0f}% saved)"
+                )
         for idx, text in enumerate(info):
             cv2.putText(
                 frame, text, (16, 26 + idx * 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2
@@ -485,15 +577,23 @@ class PedestrianCrossingSimulation:
             served = self.controller.pedestrians_served
             avg_wait = self.controller.total_ped_wait / served if served else 0.0
             if display_window and action != "exit":
+                lines = [
+                    f"Simulated time: {self._sim_time:.0f} s",
+                    f"Walk phases served: {served}",
+                    f"Average pedestrian wait: {avg_wait:.1f} s",
+                ]
+                if self.baseline is not None:
+                    base = self.baseline.road.total_wait + self.baseline.ped_wait_total
+                    ours = self.road.total_wait + self.ped_wait_total
+                    if base > 1.0:
+                        pct = 100.0 * (base - ours) / base
+                        lines.append(
+                            f"Waiting vs fixed 40 s cycle: {ours:.0f} s vs "
+                            f"{base:.0f} s  ({pct:+.0f}%)"
+                        )
+                lines.append("No pedestrian waiting = the cars never see red.")
                 card_action = show_end_card(
-                    window_name,
-                    "Case 1 - Pedestrian Crossing",
-                    [
-                        f"Simulated time: {self._sim_time:.0f} s",
-                        f"Walk phases served: {served}",
-                        f"Average pedestrian wait: {avg_wait:.1f} s",
-                        "No pedestrian waiting = the cars never see red.",
-                    ],
+                    window_name, "Case 1 - Pedestrian Crossing", lines,
                 )
                 action = card_action or action
             if display_window:
@@ -721,38 +821,55 @@ class RealPedestrianCrossing:
         out = frame.copy()
         zx, zy, zw, zh = veh_zone
         cv2.rectangle(out, (zx, zy), (zx + zw, zy + zh), (255, 160, 0), 2)
-        cv2.putText(out, "VEHICLE ZONE", (zx + 4, zy + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 160, 0), 2)
+        cv2.putText(out, "VEHICLE ZONE", (zx + 4, zy + 16), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45, (255, 160, 0), 1, cv2.LINE_AA)
         zx, zy, zw, zh = ped_zone
         cv2.rectangle(out, (zx, zy), (zx + zw, zy + zh), (0, 220, 255), 2)
-        cv2.putText(out, "PED ZONE", (zx + 4, zy + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 220, 255), 2)
+        cv2.putText(out, "PED ZONE", (zx + 4, zy + 16), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45, (0, 220, 255), 1, cv2.LINE_AA)
 
+        # Bold boxes only for detections the controller counts; anything
+        # outside its zone stays a thin gray outline.
         for det in vehicles:
             x, y, w, h = det.bbox
-            cv2.rectangle(out, (x, y), (x + w, y + h), (80, 255, 120), 2)
+            if self._center_in_zone(det, veh_zone):
+                cv2.rectangle(out, (x, y), (x + w, y + h), (80, 255, 120), 2)
+            else:
+                cv2.rectangle(out, (x, y), (x + w, y + h), (150, 150, 150), 1)
         for det in parked_vehicles:
             x, y, w, h = det.bbox
-            cv2.rectangle(out, (x, y), (x + w, y + h), (140, 140, 140), 2)
+            cv2.rectangle(out, (x, y), (x + w, y + h), (140, 140, 140), 1)
             cv2.putText(
-                out, "PARKED", (x, max(12, y - 6)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (140, 140, 140), 2,
+                out, "PARKED", (x, max(12, y - 4)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (140, 140, 140), 1, cv2.LINE_AA,
             )
         for det in persons:
             x, y, w, h = det.bbox
-            cv2.rectangle(out, (x, y), (x + w, y + h), (0, 200, 255), 2)
+            if self._center_in_zone(det, ped_zone):
+                cv2.rectangle(out, (x, y), (x + w, y + h), (0, 200, 255), 2)
+            else:
+                cv2.rectangle(out, (x, y), (x + w, y + h), (150, 150, 150), 1)
 
-        out = draw_traffic_light(out, str(status["car_signal"]), "top-right")
         ped_signal = str(status["ped_signal"])
-        color = {"WALK": (0, 220, 0), "CLEAR": (0, 200, 255)}.get(ped_signal, (0, 0, 230))
-        cv2.rectangle(out, (20, 20), (270, 140), (40, 40, 40), -1)
-        lines = [
-            ("SHADOW MODE", (255, 255, 255)),
-            (f"Ped signal: {ped_signal}", color),
-            (f"Cars in zone: {vehicles_in_zone}", (255, 255, 255)),
-            (f"Peds in zone: {persons_in_zone}", (255, 255, 255)),
-            (f"Parked ignored: {len(parked_vehicles)}", (140, 140, 140)),
-        ]
-        for idx, (text, col) in enumerate(lines):
-            cv2.putText(out, text, (30, 44 + idx * 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, col, 2)
+        car_signal = str(status["car_signal"])
+        ped_color = {"WALK": (0, 220, 0), "CLEAR": (0, 200, 255)}.get(ped_signal, (0, 0, 230))
+        car_color = {"GREEN": (0, 220, 0), "YELLOW": (0, 210, 230)}.get(car_signal, (0, 0, 230))
+
+        # Slim translucent top strip instead of a video-blocking box.
+        strip = out.copy()
+        cv2.rectangle(strip, (0, 0), (out.shape[1], 26), (20, 20, 20), -1)
+        cv2.addWeighted(strip, 0.6, out, 0.4, 0, out)
+        cv2.putText(out, "SHADOW MODE   cars", (10, 18), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(out, car_signal, (192, 18), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5, car_color, 1, cv2.LINE_AA)
+        cv2.putText(out, "ped", (268, 18), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(out, ped_signal, (304, 18), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5, ped_color, 1, cv2.LINE_AA)
+        cv2.putText(out, f"cars in zone {vehicles_in_zone}   peds {persons_in_zone}   "
+                         f"parked {len(parked_vehicles)}",
+                    (410, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
         return out
 
     def run(

@@ -777,6 +777,7 @@ class SimulatedVehicle:
     length: int
     width: int
     color: Tuple[int, int, int]
+    waited: float = 0.0
 
 
 class SimulatedRoad:
@@ -795,6 +796,7 @@ class SimulatedRoad:
         spawn_pause_cooldown: Tuple[float, float] = (5.0, 9.0),
         enforce_clearance: bool = False,
         post_clear_pause: Tuple[float, float] | None = None,
+        palette: Sequence[Tuple[int, int, int]] | None = None,
     ) -> None:
         if orientation not in {"vertical", "horizontal"}:
             raise ValueError("orientation must be 'vertical' or 'horizontal'")
@@ -807,6 +809,12 @@ class SimulatedRoad:
 
         self.vehicles: List[SimulatedVehicle] = []
         self.min_gap = 30
+        #: Cumulative vehicle-seconds spent waiting (for baseline comparisons).
+        self.total_wait = 0.0
+        #: Per-road vehicle colour family; overridden for on-screen road identity.
+        self.palette: List[Tuple[int, int, int]] = list(
+            palette or [(66, 245, 189), (66, 134, 244), (244, 199, 66), (240, 96, 96)]
+        )
 
         self._spawn_pause_chance = max(0.0, spawn_pause_chance)
         self._spawn_pause_duration_range = spawn_pause_duration
@@ -821,13 +829,13 @@ class SimulatedRoad:
         self._post_clear_pause_remaining = 0.0
 
         if orientation == "vertical":
-            self.vehicle_length, self.vehicle_width = 70, 40
+            self.vehicle_length, self.vehicle_width = 64, 32
             self.stop_line = self.frame_height // 2 - 30
             self._despawn_limit = self.frame_height
             self._lane_left = self.frame_width // 2 - 60
             self._lane_right = self.frame_width // 2 + 60
         else:
-            self.vehicle_length, self.vehicle_width = 70, 40
+            self.vehicle_length, self.vehicle_width = 64, 32
             merge_entry = self.frame_width // 2 - 70
             merge_exit = self.frame_width // 2 + 70
             self.stop_line = max(0, merge_entry - 20)
@@ -868,8 +876,7 @@ class SimulatedRoad:
     def _new_vehicle(self) -> SimulatedVehicle:
         base_speed = 180 if self.orientation == "vertical" else 170
         speed_variation = self.rng.uniform(-40, 30)
-        color_options = [(66, 245, 189), (66, 134, 244), (244, 199, 66), (240, 96, 96)]
-        color = self.rng.choice(color_options)
+        color = self.rng.choice(self.palette)
 
         if self.orientation == "vertical":
             start_position = -self.vehicle_length - self.rng.uniform(10, 80)
@@ -974,6 +981,9 @@ class SimulatedRoad:
                 target_front = min(target_front, next_front_limit - self.min_gap)
 
             target_front = max(target_front, current_front)
+            if target_front - current_front < 1e-6 and current_front <= self.stop_line:
+                vehicle.waited += dt
+                self.total_wait += dt
             vehicle.position = target_front - vehicle.length
             next_front_limit = vehicle.position
 
@@ -999,6 +1009,9 @@ class SimulatedRoad:
                 target_front = min(target_front, next_front_limit - self.min_gap)
 
             target_front = max(target_front, current_front)
+            if target_front - current_front < 1e-6 and current_front <= self.stop_line:
+                vehicle.waited += dt
+                self.total_wait += dt
             vehicle.position = target_front - vehicle.length
             next_front_limit = vehicle.position
 
@@ -1019,6 +1032,13 @@ class SimulatedRoad:
                 vehicle.color,
                 -1,
             )
+            cv2.rectangle(
+                frame,
+                (x, top),
+                (x + self.vehicle_width, top + self.vehicle_length),
+                (25, 25, 25),
+                1,
+            )
         else:
             y = self.frame_height // 2 - self.vehicle_width // 2
             left = int(vehicle.position)
@@ -1028,6 +1048,13 @@ class SimulatedRoad:
                 (left + self.vehicle_length, y + self.vehicle_width),
                 vehicle.color,
                 -1,
+            )
+            cv2.rectangle(
+                frame,
+                (left, y),
+                (left + self.vehicle_length, y + self.vehicle_width),
+                (25, 25, 25),
+                1,
             )
 
     def draw_vehicles(self, frame: np.ndarray) -> None:
@@ -1100,6 +1127,8 @@ def draw_case2_hud(
     metrics2: "QueueMetrics",
     switches: int,
     sim_time: float,
+    adaptive_wait: Optional[float] = None,
+    baseline_wait: Optional[float] = None,
 ):
     """Case 3-style HUD for the two-road simulation: translucent panel with
     outlined text, plus compact per-road signal housings — no overlapping
@@ -1108,30 +1137,118 @@ def draw_case2_hud(
     active = "Road 1" if signal_status["active_road"] == "road1" else "Road 2"
     remaining = signal_status.get("time_remaining")
     lines = [
-        f"{active} has GREEN"
-        if signal_status[signal_status["active_road"]] == "GREEN"
-        else f"Changing over ({signal_status['road1']} / {signal_status['road2']})",
-        f"Road 1: {metrics1.count} cars   pressure {metrics1.pressure:.1f}",
-        f"Road 2: {metrics2.count} cars   pressure {metrics2.pressure:.1f}",
-        f"Switches: {switches}   elapsed: {sim_time:.0f} s",
+        (f"{active} has GREEN"
+         if signal_status[signal_status["active_road"]] == "GREEN"
+         else f"Changing over ({signal_status['road1']} / {signal_status['road2']})",
+         (255, 255, 255)),
+        (f"Road 1: {metrics1.count} cars   pressure {metrics1.pressure:.1f}", ROAD1_COLOR),
+        (f"Road 2: {metrics2.count} cars   pressure {metrics2.pressure:.1f}", ROAD2_COLOR),
+        (f"Switches: {switches}   elapsed: {sim_time:.0f} s", (255, 255, 255)),
     ]
     if isinstance(remaining, (int, float)):
-        lines.insert(1, f"Phase ends in: {float(remaining):.1f} s")
+        lines.insert(1, (f"Phase ends in: {float(remaining):.1f} s", (255, 255, 255)))
+    if baseline_wait is not None and adaptive_wait is not None and baseline_wait > 1.0:
+        saved = baseline_wait - adaptive_wait
+        pct = 100.0 * saved / baseline_wait
+        lines.append((
+            f"Waiting vs fixed timer: {adaptive_wait:.0f}s vs {baseline_wait:.0f}s "
+            f"({pct:+.0f}% saved)"
+            if saved >= 0 else
+            f"Waiting vs fixed timer: {adaptive_wait:.0f}s vs {baseline_wait:.0f}s",
+            (80, 255, 120),
+        ))
 
     panel_w = 12 + max(
-        cv2.getTextSize(t, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)[0][0] for t in lines
+        cv2.getTextSize(t, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)[0][0] for t, _ in lines
     )
     overlay = frame.copy()
     cv2.rectangle(overlay, (8, 8), (8 + panel_w + 12, 20 + 24 * len(lines)),
                   (20, 20, 20), -1)
     cv2.addWeighted(overlay, 0.65, frame, 0.35, 0, frame)
-    for index, text in enumerate(lines):
-        _outlined_text(frame, text, (16, 30 + index * 24))
+    for index, (text, color) in enumerate(lines):
+        _outlined_text(frame, text, (16, 30 + index * 24), color=color)
 
     width = frame.shape[1]
+    height = frame.shape[0]
     draw_compact_signal(frame, str(signal_status["road1"]), (width - 118, 14), "Road 1")
     draw_compact_signal(frame, str(signal_status["road2"]), (width - 52, 14), "Road 2")
+
+    # Identity labels drawn ON the roads, with direction-of-travel arrows.
+    _outlined_text(frame, "Road 1", (width // 2 + 68, 26), color=ROAD1_COLOR)
+    cv2.arrowedLine(frame, (width // 2 + 52, 12), (width // 2 + 52, 44),
+                    ROAD1_COLOR, 2, tipLength=0.35)
+    _outlined_text(frame, "Road 2", (10, height // 2 - 72), color=ROAD2_COLOR)
+    cv2.arrowedLine(frame, (12, height // 2 - 62), (44, height // 2 - 62),
+                    ROAD2_COLOR, 2, tipLength=0.35)
     return frame
+
+
+#: Road identity colours (BGR families), matched to the Case 3 approach hues.
+ROAD1_PALETTE = [(70, 180, 255), (60, 150, 230), (90, 200, 255)]   # oranges
+ROAD2_PALETTE = [(255, 180, 70), (230, 150, 60), (255, 200, 100)]  # blues
+ROAD1_COLOR = ROAD1_PALETTE[0]
+ROAD2_COLOR = ROAD2_PALETTE[0]
+
+
+class FixedTimeSignal:
+    """A dumb fixed-cycle plan: the baseline the adaptive controller beats.
+
+    20 s green per road + 3 s yellow + 2 s all-red, forever, regardless of
+    demand — the standard behaviour of an untimed-study intersection.
+    """
+
+    GREEN = 20.0
+    YELLOW = 3.0
+    ALL_RED = 2.0
+
+    def signals(self, now: float) -> Dict[str, str]:
+        cycle = self.GREEN + self.YELLOW + self.ALL_RED
+        phase = now % (2 * cycle)
+        road, offset = ("road1", phase) if phase < cycle else ("road2", phase - cycle)
+        other = "road2" if road == "road1" else "road1"
+        if offset < self.GREEN:
+            state = "GREEN"
+        elif offset < self.GREEN + self.YELLOW:
+            state = "YELLOW"
+        else:
+            state = "RED"
+        return {road: state, other: "RED"}
+
+
+class Case2Baseline:
+    """Invisible twin world: identical traffic under the fixed-time plan.
+
+    Both worlds consume identical random streams (separate ``Random``
+    instances with the same seed, same call order), so every car that
+    spawns in the adaptive world spawns here too — the wait-time difference
+    is therefore a true like-for-like comparison.
+    """
+
+    def __init__(self, seed: int, frame_size, main_rate: float, side_rate: float) -> None:
+        rng = random.Random(seed)
+        self.road1 = SimulatedRoad(
+            "vertical", frame_size, rng, spawn_rate=main_rate, max_vehicles=7,
+            spawn_pause_chance=1.0, spawn_pause_duration=(4.0, 6.5),
+            spawn_pause_cooldown=(4.5, 8.0), enforce_clearance=True,
+            post_clear_pause=(0.8, 1.6), palette=ROAD1_PALETTE,
+        )
+        self.road2 = SimulatedRoad(
+            "horizontal", frame_size, rng, spawn_rate=side_rate, max_vehicles=3,
+            spawn_pause_chance=0.9, spawn_pause_duration=(2.5, 4.5),
+            spawn_pause_cooldown=(3.0, 6.0), enforce_clearance=True,
+            post_clear_pause=(0.9, 1.8), palette=ROAD2_PALETTE,
+        )
+        self.signal = FixedTimeSignal()
+        self.elapsed = 0.0
+
+    def step(self, dt: float) -> None:
+        self.elapsed += dt
+        signals = self.signal.signals(self.elapsed)
+        self.road1.step(signals["road1"], dt)
+        self.road2.step(signals["road2"], dt)
+
+    def total_wait(self) -> float:
+        return self.road1.total_wait + self.road2.total_wait
 
 
 class SimulationTrafficSystem:
@@ -1161,7 +1278,8 @@ class SimulationTrafficSystem:
 
         self.fps = max(1, fps)
         self.frame_shape = (frame_size[0], frame_size[1], 3)
-        rng = random.Random(seed)
+        resolved_seed = seed if seed is not None else random.randrange(1 << 30)
+        rng = random.Random(resolved_seed)
 
         main_spawn_rate = (
             spawn_rate_road1 if spawn_rate_road1 is not None else max(0.6, spawn_rate * 0.55)
@@ -1181,6 +1299,7 @@ class SimulationTrafficSystem:
             spawn_pause_cooldown=(4.5, 8.0),
             enforce_clearance=True,
             post_clear_pause=(0.8, 1.6),
+            palette=ROAD1_PALETTE,
         )
         self.road2 = SimulatedRoad(
             "horizontal",
@@ -1193,6 +1312,12 @@ class SimulationTrafficSystem:
             spawn_pause_cooldown=(3.0, 6.0),
             enforce_clearance=True,
             post_clear_pause=(0.9, 1.8),
+            palette=ROAD2_PALETTE,
+        )
+        # Invisible twin running the SAME traffic under a fixed-time plan,
+        # so the HUD can display the measured benefit live.
+        self.baseline = Case2Baseline(
+            resolved_seed, frame_size, main_spawn_rate, side_spawn_rate
         )
         self._scene_background = self._create_scene_background()
 
@@ -1287,6 +1412,7 @@ class SimulationTrafficSystem:
                 self._sim_time += dt
                 self.road1.step(self._current_signal["road1"], dt)
                 self.road2.step(self._current_signal["road2"], dt)
+                self.baseline.step(dt)
 
                 metrics1 = self._process_simulated_road(
                     self.road1, self.queue_analyzer_road1
@@ -1332,6 +1458,8 @@ class SimulationTrafficSystem:
                 frame = draw_case2_hud(
                     frame, self._current_signal, metrics1, metrics2,
                     switches, self._sim_time,
+                    adaptive_wait=self.road1.total_wait + self.road2.total_wait,
+                    baseline_wait=self.baseline.total_wait(),
                 )
 
                 if display_window:
@@ -1347,16 +1475,24 @@ class SimulationTrafficSystem:
 
         finally:
             if display_window and action != "exit":
+                adaptive_wait = self.road1.total_wait + self.road2.total_wait
+                baseline_wait = self.baseline.total_wait()
+                saved_line = "Same traffic, fixed 20 s timer: no comparison yet"
+                if baseline_wait > 1.0:
+                    pct = 100.0 * (baseline_wait - adaptive_wait) / baseline_wait
+                    saved_line = (
+                        f"Waiting time vs fixed 20 s timer: {adaptive_wait:.0f} s "
+                        f"vs {baseline_wait:.0f} s  ({pct:+.0f}%)"
+                    )
                 card_action = show_end_card(
                     window_name,
                     "Case 2 - Two-Road Intersection",
                     [
                         f"Simulated time: {self._sim_time:.0f} s",
                         f"Signal switches: {switches}",
-                        f"Avg vehicles/frame  Road 1: "
-                        f"{self.stats_road1.avg_vehicles_per_frame:.2f}   Road 2: "
-                        f"{self.stats_road2.avg_vehicles_per_frame:.2f}",
-                        "Green time follows measured demand, not a plan.",
+                        saved_line,
+                        "Identical cars ran in an invisible twin world under",
+                        "a dumb fixed timer - that is the saving.",
                     ],
                 )
                 action = card_action or action
