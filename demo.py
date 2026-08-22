@@ -55,6 +55,18 @@ DEFAULT_REAL_VIDEOS = {
     3: "videos/sherbrooke_intersection.avi",
 }
 
+#: Named case-3 real-mode presets: video + auto-calibrated zones, ready to
+#: demo with a single flag. The rain preset needs the AAU RainSnow dataset
+#: standardized locally (see README "Dataset tooling").
+PRESETS = {
+    "rain": {
+        "video": "datasets/standardized/rainsnow/hadsundvej_hadsundvej-2_cam1/video.mp4",
+        "zones": "presets/hadsundvej2_rain_zones.json",
+        "description": "Rainy Danish intersection (RainSnow Hadsundvej-2), "
+                       "zones learned by auto_calibrate.py",
+    },
+}
+
 
 def _print_cases() -> None:
     print("Available pilot demo cases:\n")
@@ -121,6 +133,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-frames", type=int, help="Stop after N frames (default: run until 'q')")
     parser.add_argument("--no-display", action="store_true", help="Run headless (no GUI window)")
     parser.add_argument("--fullscreen", action="store_true", help="Start fullscreen (press F to toggle)")
+    parser.add_argument(
+        "--preset",
+        choices=sorted(PRESETS),
+        help="Case 3 real mode: named video+zones bundle (e.g. the rain demo)",
+    )
+    parser.add_argument(
+        "--kiosk",
+        action="store_true",
+        help="Unattended mode: cycle the three simulations fullscreen forever "
+             "(plus the rain preset when its dataset is present); ESC exits",
+    )
+    parser.add_argument(
+        "--kiosk-seconds",
+        type=int,
+        default=75,
+        help="Seconds per kiosk segment",
+    )
     parser.add_argument("--list", action="store_true", help="List the demo cases and exit")
     return parser
 
@@ -204,8 +233,18 @@ def run_case3(args: argparse.Namespace) -> None:
     else:
         from four_way_intersection import RealFourWayIntersection
 
-        video = _ensure_case_video(3, args.video)
-        zones = _load_zones(args.zones_from) if args.zones_from else None
+        video_override, zones_path = args.video, args.zones_from
+        if args.preset:
+            preset = PRESETS[args.preset]
+            video_override = video_override or preset["video"]
+            zones_path = zones_path or preset["zones"]
+            if not Path(video_override).exists():
+                raise SystemExit(
+                    f"Preset '{args.preset}' needs {video_override} — standardize the "
+                    "dataset first (see README 'Dataset tooling')."
+                )
+        video = _ensure_case_video(3, video_override)
+        zones = _load_zones(zones_path) if zones_path else None
         demo = RealFourWayIntersection(video, zones=zones)
         demo.run(
             max_frames=args.max_frames,
@@ -214,10 +253,62 @@ def run_case3(args: argparse.Namespace) -> None:
         )
 
 
+def run_kiosk(args: argparse.Namespace) -> None:
+    """Cycle the demos fullscreen, unattended, until ESC.
+
+    Q skips to the next segment; each pass uses a fresh random seed so the
+    loop never looks canned. The rain shadow-mode segment joins the rotation
+    automatically when its dataset is present.
+    """
+
+    from pedestrian_crossing import PedestrianCrossingSimulation
+    from smart_traffic_system import SimulationTrafficSystem
+    from four_way_intersection import FourWaySimulation, RealFourWayIntersection
+
+    frames = lambda fps: args.kiosk_seconds * fps  # noqa: E731
+
+    def case1():
+        return PedestrianCrossingSimulation(fps=args.fps).run(
+            max_frames=frames(args.fps), fullscreen=True)
+
+    def case2():
+        return SimulationTrafficSystem(fps=args.fps).run(
+            max_frames=frames(args.fps), fullscreen=True)
+
+    def case3():
+        return FourWaySimulation(fps=args.fps, size=args.size).run(
+            max_frames=frames(args.fps), fullscreen=True)
+
+    segments = [case1, case2, case3]
+
+    rain = PRESETS["rain"]
+    if Path(rain["video"]).exists():
+        def case3_rain():
+            demo = RealFourWayIntersection(rain["video"], zones=_load_zones(rain["zones"]))
+            return demo.run(max_frames=frames(20), fullscreen=True)
+        segments.append(case3_rain)
+    else:
+        logger.info("Kiosk: rain segment skipped (dataset not standardized locally)")
+
+    logger.info("Kiosk mode: %d segments, %ds each. ESC exits, Q skips.",
+                len(segments), args.kiosk_seconds)
+    while True:
+        for segment in segments:
+            if segment() == "exit":
+                logger.info("Kiosk mode ended.")
+                return
+
+
 def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.kiosk:
+        if args.fps <= 0:
+            parser.error("--fps must be a positive integer")
+        run_kiosk(args)
+        return
 
     if args.list or args.case is None:
         _print_cases()

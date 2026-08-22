@@ -600,8 +600,13 @@ class SmartTrafficSystem:
         """
         logger.info("Smart Traffic Light Automation System initialised. Press 'q' to quit.")
 
+        from demo_ui import draw_controls_hint, handle_display_keys, show_end_card
+
         frame_count = 0
         fullscreen_active = fullscreen and display_window
+        action = None
+        switches = 0
+        previous_active = None
 
         if display_window:
             cv2.namedWindow(window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
@@ -679,11 +684,18 @@ class SmartTrafficSystem:
                     (20, frame2.shape[0] - 60),
                 )
 
+                if previous_active is None:
+                    previous_active = signal_status["active_road"]
+                elif signal_status["active_road"] != previous_active:
+                    switches += 1
+                    previous_active = signal_status["active_road"]
+
                 # Combine frames side by side
                 combined_frame = np.hstack([frame1, frame2])
 
                 # Display the result
                 if display_window:
+                    draw_controls_hint(combined_frame)
                     cv2.imshow(window_name, combined_frame)
 
                 # Print statistics every 30 frames
@@ -703,17 +715,13 @@ class SmartTrafficSystem:
                 
                 frame_count += 1
 
-                # Check for quit / fullscreen-toggle commands
+                # Check for quit / pause / fullscreen commands
                 if display_window:
-                    key = cv2.waitKey(30) & 0xFF
-                    if key == ord('q'):
+                    action, fullscreen_active = handle_display_keys(
+                        window_name, 30, fullscreen_active
+                    )
+                    if action:
                         break
-                    if key in (ord('f'), ord('F')):
-                        fullscreen_active = not fullscreen_active
-                        target_state = (
-                            cv2.WINDOW_FULLSCREEN if fullscreen_active else cv2.WINDOW_NORMAL
-                        )
-                        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, target_state)
 
         except Exception:
             logger.exception("Error occurred during smart traffic system execution.")
@@ -722,6 +730,20 @@ class SmartTrafficSystem:
             # Cleanup
             self.cap_road1.release()
             self.cap_road2.release()
+            if display_window and action != "exit":
+                card_action = show_end_card(
+                    window_name,
+                    "Case 2 - Two-Road Intersection (Real, shadow mode)",
+                    [
+                        f"Frames analysed: {frame_count}",
+                        f"Signal switches: {switches}",
+                        f"Avg vehicles/frame  Road 1: "
+                        f"{self.stats_road1.avg_vehicles_per_frame:.2f}   Road 2: "
+                        f"{self.stats_road2.avg_vehicles_per_frame:.2f}",
+                        "Live YOLOv8 detection driving the adaptive plan.",
+                    ],
+                )
+                action = card_action or action
             if display_window:
                 cv2.destroyAllWindows()
             
@@ -743,6 +765,7 @@ class SmartTrafficSystem:
                     self.last_metrics_road2.pressure,
                     self.last_metrics_road2.count,
                 )
+        return action
 
 
 @dataclass(slots=True)
@@ -1048,6 +1071,69 @@ class SimulatedRoad:
         return detections
 
 
+def _outlined_text(frame, text, org, scale=0.55, color=(255, 255, 255), thickness=2):
+    cv2.putText(frame, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale,
+                (0, 0, 0), thickness + 2, cv2.LINE_AA)
+    cv2.putText(frame, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale,
+                color, thickness, cv2.LINE_AA)
+
+
+def draw_compact_signal(frame, signal: str, top_left: Tuple[int, int], label: str):
+    """Mini three-lamp housing (matches the Case 3 look)."""
+
+    x, y = top_left
+    w, h = 26, 66
+    cv2.rectangle(frame, (x, y), (x + w, y + h), (38, 38, 42), -1)
+    cv2.rectangle(frame, (x, y), (x + w, y + h), (200, 200, 200), 1)
+    lamps = [("RED", (0, 0, 220), y + 13), ("YELLOW", (0, 210, 230), y + 33),
+             ("GREEN", (0, 200, 0), y + 53)]
+    for name, color, cy in lamps:
+        lit = signal == name
+        cv2.circle(frame, (x + w // 2, cy), 8, color if lit else (70, 70, 70), -1)
+    _outlined_text(frame, label, (x - 8, y + h + 18), scale=0.5)
+
+
+def draw_case2_hud(
+    frame,
+    signal_status: Dict[str, object],
+    metrics1: "QueueMetrics",
+    metrics2: "QueueMetrics",
+    switches: int,
+    sim_time: float,
+):
+    """Case 3-style HUD for the two-road simulation: translucent panel with
+    outlined text, plus compact per-road signal housings — no overlapping
+    widgets."""
+
+    active = "Road 1" if signal_status["active_road"] == "road1" else "Road 2"
+    remaining = signal_status.get("time_remaining")
+    lines = [
+        f"{active} has GREEN"
+        if signal_status[signal_status["active_road"]] == "GREEN"
+        else f"Changing over ({signal_status['road1']} / {signal_status['road2']})",
+        f"Road 1: {metrics1.count} cars   pressure {metrics1.pressure:.1f}",
+        f"Road 2: {metrics2.count} cars   pressure {metrics2.pressure:.1f}",
+        f"Switches: {switches}   elapsed: {sim_time:.0f} s",
+    ]
+    if isinstance(remaining, (int, float)):
+        lines.insert(1, f"Phase ends in: {float(remaining):.1f} s")
+
+    panel_w = 12 + max(
+        cv2.getTextSize(t, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)[0][0] for t in lines
+    )
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (8, 8), (8 + panel_w + 12, 20 + 24 * len(lines)),
+                  (20, 20, 20), -1)
+    cv2.addWeighted(overlay, 0.65, frame, 0.35, 0, frame)
+    for index, text in enumerate(lines):
+        _outlined_text(frame, text, (16, 30 + index * 24))
+
+    width = frame.shape[1]
+    draw_compact_signal(frame, str(signal_status["road1"]), (width - 118, 14), "Road 1")
+    draw_compact_signal(frame, str(signal_status["road2"]), (width - 52, 14), "Road 2")
+    return frame
+
+
 class SimulationTrafficSystem:
     """Generate synthetic frames and queue data without using a camera feed."""
 
@@ -1182,9 +1268,14 @@ class SimulationTrafficSystem:
     ) -> None:
         logger.info("Simulation mode initialised. Press 'q' to quit.")
 
+        from demo_ui import draw_controls_hint, handle_display_keys, show_end_card
+
         dt = 1.0 / float(self.fps)
         frame_count = 0
         fullscreen_active = fullscreen if display_window else False
+        action = None
+        switches = 0
+        previous_active = self._current_signal["active_road"]
 
         if display_window:
             cv2.namedWindow(window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
@@ -1225,6 +1316,10 @@ class SimulationTrafficSystem:
                     road2_approach_line=metrics2.approach_line,
                 )
 
+                if self._current_signal["active_road"] != previous_active:
+                    switches += 1
+                    previous_active = self._current_signal["active_road"]
+
                 frame = self._scene_background.copy()
                 self.road1.draw_vehicles(frame)
                 self.road2.draw_vehicles(frame)
@@ -1234,37 +1329,37 @@ class SimulationTrafficSystem:
                 frame = draw_threshold_lines(frame, metrics1, self.queue_analyzer_road1)
                 frame = draw_threshold_lines(frame, metrics2, self.queue_analyzer_road2)
 
-                frame = draw_traffic_light(frame, self._current_signal["road1"], "top-right")
-                frame = draw_traffic_light(frame, self._current_signal["road2"], "bottom-left")
-
-                frame = draw_queue_summary(
-                    frame,
-                    metrics1,
-                    self._current_signal["road1"],
-                    (frame.shape[1] - 240, 40),
-                )
-                frame = draw_queue_summary(
-                    frame,
-                    metrics2,
-                    self._current_signal["road2"],
-                    (20, frame.shape[0] - 120),
+                frame = draw_case2_hud(
+                    frame, self._current_signal, metrics1, metrics2,
+                    switches, self._sim_time,
                 )
 
                 if display_window:
+                    draw_controls_hint(frame)
                     cv2.imshow(window_name, frame)
-                    key = cv2.waitKey(int(1000 / self.fps)) & 0xFF
-                    if key == ord("q"):
+                    action, fullscreen_active = handle_display_keys(
+                        window_name, int(1000 / self.fps), fullscreen_active
+                    )
+                    if action:
                         break
-                    if key in (ord("f"), ord("F")):
-                        fullscreen_active = not fullscreen_active
-                        target_state = (
-                            cv2.WINDOW_FULLSCREEN if fullscreen_active else cv2.WINDOW_NORMAL
-                        )
-                        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, target_state)
 
                 frame_count += 1
 
         finally:
+            if display_window and action != "exit":
+                card_action = show_end_card(
+                    window_name,
+                    "Case 2 - Two-Road Intersection",
+                    [
+                        f"Simulated time: {self._sim_time:.0f} s",
+                        f"Signal switches: {switches}",
+                        f"Avg vehicles/frame  Road 1: "
+                        f"{self.stats_road1.avg_vehicles_per_frame:.2f}   Road 2: "
+                        f"{self.stats_road2.avg_vehicles_per_frame:.2f}",
+                        "Green time follows measured demand, not a plan.",
+                    ],
+                )
+                action = card_action or action
             if display_window:
                 cv2.destroyAllWindows()
 
@@ -1273,6 +1368,7 @@ class SimulationTrafficSystem:
                 self.stats_road1.avg_vehicles_per_frame,
                 self.stats_road2.avg_vehicles_per_frame,
             )
+        return action
 
 SetupFactory = Callable[[Path], TrafficVideoSetup]
 

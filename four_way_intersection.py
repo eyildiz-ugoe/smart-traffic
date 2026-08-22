@@ -581,29 +581,51 @@ class FourWaySimulation:
             state = cv2.WINDOW_FULLSCREEN if fullscreen_active else cv2.WINDOW_NORMAL
             cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, state)
 
+        from demo_ui import draw_controls_hint, handle_display_keys, show_end_card
+
+        action = None
         try:
             while max_frames is None or frame_count < max_frames:
                 status = self.step(dt)
                 if display_window:
-                    cv2.imshow(window_name, self.render(status))
-                    key = cv2.waitKey(int(1000 / self.fps)) & 0xFF
-                    if key == ord("q"):
+                    frame = self.render(status)
+                    draw_controls_hint(frame)
+                    cv2.imshow(window_name, frame)
+                    action, fullscreen_active = handle_display_keys(
+                        window_name, int(1000 / self.fps), fullscreen_active
+                    )
+                    if action:
                         break
-                    if key in (ord("f"), ord("F")):
-                        fullscreen_active = not fullscreen_active
-                        state = (
-                            cv2.WINDOW_FULLSCREEN if fullscreen_active else cv2.WINDOW_NORMAL
-                        )
-                        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, state)
                 frame_count += 1
         finally:
+            controller = self.controller
+            if display_window and action != "exit":
+                waits = (
+                    (self.approaches["N"].average_wait() + self.approaches["S"].average_wait()) / 2,
+                    (self.approaches["E"].average_wait() + self.approaches["W"].average_wait()) / 2,
+                )
+                card_action = show_end_card(
+                    window_name,
+                    "Case 3 - Four-Way Intersection",
+                    [
+                        f"Simulated time: {self._sim_time:.0f} s",
+                        f"Signal switches: {controller.total_switches}",
+                        f"Demand-driven (no timer): {controller.early_switches} "
+                        f"of {controller.total_switches}",
+                        f"Average wait  North-South: {waits[0]:.1f} s   "
+                        f"East-West: {waits[1]:.1f} s",
+                        "An empty road never holds a green hostage.",
+                    ],
+                )
+                action = card_action or action
             if display_window:
                 cv2.destroyAllWindows()
             logger.info(
                 "Four-way simulation done. %d switches (%d early / demand-driven).",
-                self.controller.total_switches,
-                self.controller.early_switches,
+                controller.total_switches,
+                controller.early_switches,
             )
+        return action
 
 
 # ---------------------------------------------------------------------------
@@ -810,7 +832,11 @@ class RealFourWayIntersection:
             state = cv2.WINDOW_FULLSCREEN if fullscreen_active else cv2.WINDOW_NORMAL
             cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, state)
 
+        from demo_ui import draw_controls_hint, handle_display_keys, show_end_card
+
         read_failures = 0
+        action = None
+        max_parked = 0
         try:
             while max_frames is None or frame_count < max_frames:
                 ok, frame = self.capture.read()
@@ -826,20 +852,34 @@ class RealFourWayIntersection:
                     self._reset_playback_state()
                     continue
                 read_failures = 0
-                annotated, _ = self.process_frame(frame)
+                annotated, status = self.process_frame(frame)
+                max_parked = max(max_parked, int(status.get("parked_ignored", 0)))
                 if display_window:
+                    draw_controls_hint(annotated)
                     cv2.imshow(window_name, annotated)
-                    key = cv2.waitKey(1) & 0xFF
-                    if key == ord("q"):
+                    action, fullscreen_active = handle_display_keys(
+                        window_name, 1, fullscreen_active
+                    )
+                    if action:
                         break
-                    if key in (ord("f"), ord("F")):
-                        fullscreen_active = not fullscreen_active
-                        state = (
-                            cv2.WINDOW_FULLSCREEN if fullscreen_active else cv2.WINDOW_NORMAL
-                        )
-                        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, state)
                 frame_count += 1
         finally:
             self.capture.release()
+            if display_window and action != "exit":
+                controller = self.controller
+                card_action = show_end_card(
+                    window_name,
+                    "Case 3 - Four-Way Intersection (Real, shadow mode)",
+                    [
+                        f"Frames analysed: {frame_count}",
+                        f"Signal switches: {controller.total_switches} "
+                        f"(demand-driven: {controller.early_switches})",
+                        f"Parked cars excluded from demand (max): {max_parked}",
+                        "Real detections, adaptive plan overlaid - no",
+                        "signal hardware touched.",
+                    ],
+                )
+                action = card_action or action
             if display_window:
                 cv2.destroyAllWindows()
+        return action

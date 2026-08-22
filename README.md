@@ -231,7 +231,14 @@ python demo.py --case {1,2,3} --mode {simulation,real} [options]
   --size INT             case 3 render size, 320-2160 px  (default: auto-fit)
   --max-frames INT       stop after N frames (scripted runs)
   --no-display           headless (no GUI window)
-  --fullscreen           start fullscreen; F toggles, q quits
+  --fullscreen           start fullscreen
+  --preset rain          case 3 real: rainy RainSnow intersection with
+                         auto-calibrated zones (dataset required locally)
+  --kiosk                cycle all cases fullscreen unattended; ESC exits
+
+On-screen controls in every window: SPACE pause, F fullscreen, Q end run
+(shows the closing KPI card), ESC exit. docs/DEMO_SCRIPT.md is the
+rehearsed presentation run order with fixed seeds and talking points.
 ```
 
 ## Testing
@@ -376,6 +383,20 @@ and sample-run through the actual detector):
 | Ko-PER | 5 assembled videos, 25 fps | ✅ 5–12 vehicles/frame on the main sequences; example clip is near-empty by content |
 | Urban Tracker | 2 videos | ✅ bundled demo footage |
 | DAWN | 4 image sets (1,027 stills) | ✅ readable, detector finds vehicles; images-only → benchmarking, not signal-loop testing |
+
+**Measured baseline vs. ground truth** (`score_detection.py`): scoring
+the exact demo configuration (YOLOv8n, CPU, default confidence) against
+all 2,198 annotated RainSnow frames at IoU 0.5 gives **vehicle precision
+0.52 / recall 0.36 / F1 0.42** overall — ranging from **F1 0.60** in
+moderate conditions (Hasserisvej) down to **recall 0.07** in night +
+heavy rain (Egensevej, where precision stays 0.77: what it finds is
+real, it simply misses most). Pedestrians at these long vehicle-oriented
+camera ranges are effectively undetectable (F1 0.05) — Case 1 pilots
+need dedicated crossing-oriented views, as in the Rouen footage where
+pedestrian detection works well. These numbers are the honest baseline
+of the smallest model with no local training: exactly what the Phase 2
+fine-tuning (GPU, larger model, local footage) is budgeted to raise,
+with this same script measuring the improvement.
 
 The hardest RainSnow sequences (Egensevej at night in heavy rain —
 headlight bloom and raindrops on the lens) yield 0–2 detections per

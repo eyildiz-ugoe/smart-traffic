@@ -465,31 +465,45 @@ class PedestrianCrossingSimulation:
             state = cv2.WINDOW_FULLSCREEN if fullscreen_active else cv2.WINDOW_NORMAL
             cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, state)
 
+        from demo_ui import draw_controls_hint, handle_display_keys, show_end_card
+
+        action = None
         try:
             while max_frames is None or frame_count < max_frames:
                 status = self.step(dt)
                 if display_window:
-                    cv2.imshow(window_name, self.render(status))
-                    key = cv2.waitKey(int(1000 / self.fps)) & 0xFF
-                    if key == ord("q"):
+                    frame = self.render(status)
+                    draw_controls_hint(frame)
+                    cv2.imshow(window_name, frame)
+                    action, fullscreen_active = handle_display_keys(
+                        window_name, int(1000 / self.fps), fullscreen_active
+                    )
+                    if action:
                         break
-                    if key in (ord("f"), ord("F")):
-                        fullscreen_active = not fullscreen_active
-                        state = (
-                            cv2.WINDOW_FULLSCREEN if fullscreen_active else cv2.WINDOW_NORMAL
-                        )
-                        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, state)
                 frame_count += 1
         finally:
-            if display_window:
-                cv2.destroyAllWindows()
             served = self.controller.pedestrians_served
             avg_wait = self.controller.total_ped_wait / served if served else 0.0
+            if display_window and action != "exit":
+                card_action = show_end_card(
+                    window_name,
+                    "Case 1 - Pedestrian Crossing",
+                    [
+                        f"Simulated time: {self._sim_time:.0f} s",
+                        f"Walk phases served: {served}",
+                        f"Average pedestrian wait: {avg_wait:.1f} s",
+                        "No pedestrian waiting = the cars never see red.",
+                    ],
+                )
+                action = card_action or action
+            if display_window:
+                cv2.destroyAllWindows()
             logger.info(
                 "Pedestrian crossing simulation done. Served %d walk phases, avg wait %.1fs",
                 served,
                 avg_wait,
             )
+        return action
 
 
 # ---------------------------------------------------------------------------
@@ -758,7 +772,11 @@ class RealPedestrianCrossing:
             state = cv2.WINDOW_FULLSCREEN if fullscreen_active else cv2.WINDOW_NORMAL
             cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, state)
 
+        from demo_ui import draw_controls_hint, handle_display_keys, show_end_card
+
         read_failures = 0
+        action = None
+        max_parked = 0
         try:
             while max_frames is None or frame_count < max_frames:
                 ok, frame = self.capture.read()
@@ -774,20 +792,33 @@ class RealPedestrianCrossing:
                     self._reset_playback_state()
                     continue
                 read_failures = 0
-                annotated, _ = self.process_frame(frame)
+                annotated, status = self.process_frame(frame)
+                max_parked = max(max_parked, int(status.get("parked_ignored", 0)))
                 if display_window:
+                    draw_controls_hint(annotated)
                     cv2.imshow(window_name, annotated)
-                    key = cv2.waitKey(1) & 0xFF
-                    if key == ord("q"):
+                    action, fullscreen_active = handle_display_keys(
+                        window_name, 1, fullscreen_active
+                    )
+                    if action:
                         break
-                    if key in (ord("f"), ord("F")):
-                        fullscreen_active = not fullscreen_active
-                        state = (
-                            cv2.WINDOW_FULLSCREEN if fullscreen_active else cv2.WINDOW_NORMAL
-                        )
-                        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, state)
                 frame_count += 1
         finally:
             self.capture.release()
+            if display_window and action != "exit":
+                served = self.controller.pedestrians_served
+                card_action = show_end_card(
+                    window_name,
+                    "Case 1 - Pedestrian Crossing (Real, shadow mode)",
+                    [
+                        f"Frames analysed: {frame_count}",
+                        f"Walk phases granted: {served}",
+                        f"Parked cars excluded from demand (max): {max_parked}",
+                        "Real pedestrians detected; every walk began at a",
+                        "measured safe gap.",
+                    ],
+                )
+                action = card_action or action
             if display_window:
                 cv2.destroyAllWindows()
+        return action
