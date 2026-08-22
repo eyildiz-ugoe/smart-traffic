@@ -221,17 +221,24 @@ def build_rainsnow(rainsnow_root: Optional[Path]) -> int:
 
 
 def build_dawn() -> int:
-    """DAWN: adverse-weather image set (kept as images; detector benchmarking)."""
+    """DAWN: adverse-weather image set (kept as images; detector benchmarking).
 
-    archive = DATASETS_DIR / "dawn" / "DAWN.zip"
-    if not archive.exists():
+    Arrives as one zip per weather condition (Fog/Rain/Sand/Snow).
+    """
+
+    archives = sorted((DATASETS_DIR / "dawn").glob("*.zip"))
+    if not archives:
         return 0
     extracted = DATASETS_DIR / "dawn" / "extracted"
-    if not extracted.exists():
+    for archive in archives:
+        marker = extracted / f".{archive.stem}.done"
+        if marker.exists():
+            continue
         print(f"  extracting {archive.name} ...")
         extracted.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(archive) as zf:
             zf.extractall(extracted)
+        marker.touch()
     built = 0
     for frame_dir in discover_frame_dirs(extracted):
         sequence = frame_dir.name.lower()

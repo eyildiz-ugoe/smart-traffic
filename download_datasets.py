@@ -35,10 +35,8 @@ DOWNLOADS = [
     ("koper/Sequence3.zip", f"{KOPER_BASE}/20140527_Sequence3.zip", "565 MB", True),
     ("koper/Sequence2.zip", f"{KOPER_BASE}/20140527_Sequence2.zip", "418 MB", False),
     ("koper/Sequence1b.zip", f"{KOPER_BASE}/20140527_Sequence1b.zip", "1.3 GB", False),
-    # DAWN: ~1,000 annotated vehicle images in fog/rain/snow/sandstorm
-    # (detector benchmarking; Mendeley Data public zip endpoint).
-    ("dawn/DAWN.zip", "https://data.mendeley.com/api/datasets/766ygrbt8y/versions/3/zip",
-     "unknown (hundreds of MB)", True),
+    # DAWN is fetched per-file via the Mendeley public API (see fetch_dawn):
+    # the bulk-zip endpoint rejects non-browser downloads.
     # MIT Traffic: only the ground truth survives online — the 20 video-clip
     # links (people.csail.mit.edu/xgwang/mv2_0XX.zip) are dead (403,
     # no mirror, not in the Wayback Machine).
@@ -95,6 +93,69 @@ def fetch(url: str, target: Path) -> bool:
     return False
 
 
+DAWN_API = ("https://data.mendeley.com/public-api/datasets/766ygrbt8y/files"
+            "?folder_id=root&version=1")
+
+
+def fetch_dawn() -> int:
+    """DAWN (fog/rain/snow/sandstorm images): per-file via the public API.
+
+    Mendeley sits behind a bot challenge that blocks Python's TLS
+    fingerprint but admits curl, so both the listing and the downloads are
+    delegated to curl. Every file listing carries a SHA-256 hash, verified
+    after download. Returns the number of failures.
+    """
+
+    import hashlib
+    import json
+    import subprocess
+
+    print("\nFetching DAWN file list from the Mendeley public API ...")
+    try:
+        out = subprocess.run(
+            ["curl", "-s", "-L", "--max-time", "60", "-A", "Mozilla/5.0", DAWN_API],
+            capture_output=True, text=True, check=True,
+        )
+        listing = json.loads(out.stdout)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [fail] DAWN listing: {exc}")
+        return 1
+
+    failures = 0
+    for entry in listing:
+        name = entry.get("filename", "")
+        details = entry.get("content_details", {})
+        url = details.get("download_url")
+        expected = details.get("sha256_hash")
+        if not name or not url:
+            continue
+        target = DATASETS_DIR / "dawn" / name
+        if target.exists() and target.stat().st_size > 0:
+            print(f"  [skip] dawn/{name} already present")
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        print(f"\nFetching dawn/{name} ({int(entry.get('size', 0)) >> 20} MB) ...")
+        try:
+            subprocess.run(
+                ["curl", "-s", "-L", "--max-time", "600", "-A", "Mozilla/5.0",
+                 "-o", str(target), url],
+                check=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [fail] {name}: {exc}")
+            failures += 1
+            continue
+        if expected:
+            digest = hashlib.sha256(target.read_bytes()).hexdigest()
+            if digest != expected:
+                print(f"  [fail] {name}: checksum mismatch — deleting")
+                target.unlink()
+                failures += 1
+                continue
+        print(f"  [ok]   {name}: {target.stat().st_size >> 20} MB, checksum verified")
+    return failures
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--full", action="store_true",
@@ -115,6 +176,8 @@ def main(argv=None) -> int:
         print(f"\nFetching {rel} ({size}) ...")
         if not fetch(url, DATASETS_DIR / rel):
             failures += 1
+
+    failures += fetch_dawn()
 
     print(ACCOUNT_GATED)
     if failures:
