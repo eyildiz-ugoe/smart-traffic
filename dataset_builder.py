@@ -130,7 +130,13 @@ def register_video(dataset: str, sequence: str, source: Path,
     if not target.exists():
         seq_dir.mkdir(parents=True, exist_ok=True)
         if copy:
-            shutil.copyfile(source, target)
+            try:
+                # Hardlink when possible (same volume): no duplicated bytes
+                # for multi-GB datasets. Falls back to a real copy.
+                import os
+                os.link(source, target)
+            except OSError:
+                shutil.copyfile(source, target)
         else:
             source.replace(target)
     meta = {"dataset": dataset, "sequence": sequence, "source": str(source),
@@ -209,13 +215,27 @@ def build_rainsnow(rainsnow_root: Optional[Path]) -> int:
         roots.append(rainsnow_root)
     roots.extend(p for p in DATASETS_DIR.glob("*rainsnow*") if p.is_dir())
     built = 0
+    # The Kaggle package ships every sequence twice (top-level and inside a
+    # nested aaurainsnow/ copy). Dedupe by content identity, preferring the
+    # shortest (canonical) path so sequence names stay clean.
+    seen: set = set()
     for root in roots:
-        for video in sorted(root.rglob("*")):
-            if video.suffix.lower() not in VIDEO_EXTS or not video.is_file():
+        videos = sorted(
+            (v for v in root.rglob("*")
+             if v.is_file() and v.suffix.lower() in VIDEO_EXTS),
+            key=lambda v: (len(v.parts), str(v)),
+        )
+        for video in videos:
+            identity = (video.name, video.parent.name, video.stat().st_size)
+            if identity in seen:
                 continue
+            seen.add(identity)
             sequence = "_".join(video.relative_to(root).with_suffix("").parts).lower()
-            register_video("rainsnow", sequence, video,
-                           notes="AAU RainSnow (rain/snow/night intersections)")
+            camera = "thermal" if video.stem.lower() == "cam2" else "rgb"
+            register_video(
+                "rainsnow", sequence, video,
+                notes=f"AAU RainSnow (rain/snow/night intersections), {camera} camera",
+            )
             built += 1
     return built
 

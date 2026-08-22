@@ -360,9 +360,29 @@ academic request, UA-DETRAC mirrors) are listed for manual download.
 per-camera PNG frame folders, RainSnow RGB+thermal video pairs, DAWN
 weather-binned stills, Urban Tracker AVIs — into one uniform layout:
 `datasets/standardized/<dataset>/<sequence>/video.mp4 + meta.json`
-(fps/resolution/frame-count probed automatically). Point it at your
-Kaggle download with `--rainsnow <path>`, then run any sequence directly:
+(fps/resolution/frame-count probed automatically; large videos are
+hardlinked, not copied; the Kaggle RainSnow package's duplicated folder
+tree is deduplicated). Point it at your Kaggle download with
+`--rainsnow <path>`, then run any sequence directly:
 `python demo.py --case 3 --mode real --video <standardized path>`.
+
+**Audited compatibility** (every standardized sequence opened, probed,
+and sample-run through the actual detector):
+
+| Dataset | Sequences | Pipeline verdict |
+|---|---|---|
+| RainSnow RGB (cam1) | 22 videos, 20 fps, 5 min each | ✅ 3.9 vehicles/frame average; ready for shadow demos + auto-calibration |
+| RainSnow thermal (cam2) | 22 videos | ⚠️ 0.3 vehicles/frame — COCO-trained YOLO does not transfer to thermal; needs a thermal-trained model (Phase 2) |
+| Ko-PER | 5 assembled videos, 25 fps | ✅ 5–12 vehicles/frame on the main sequences; example clip is near-empty by content |
+| Urban Tracker | 2 videos | ✅ bundled demo footage |
+| DAWN | 4 image sets (1,027 stills) | ✅ readable, detector finds vehicles; images-only → benchmarking, not signal-loop testing |
+
+The hardest RainSnow sequences (Egensevej at night in heavy rain —
+headlight bloom and raindrops on the lens) yield 0–2 detections per
+sampled frame with YOLOv8n. That is a property of the footage, not the
+tooling — and precisely the Phase 2 fine-tuning material:
+
+![Night + heavy rain: the Phase 2 challenge case](docs/rainsnow_night_rain_challenge.jpg)
 
 ### Further crossing / intersection datasets for system testing
 
