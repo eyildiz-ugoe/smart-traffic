@@ -44,6 +44,11 @@ class TrafficLightController:
     MAX_GREEN_TIME = 30
     YELLOW_TIME = 3
     RED_TIME = 2
+    #: A changeover is deferred while a vehicle on the road losing green is
+    #: inside its dilemma zone (too close to stop comfortably) — bounded so
+    #: constant traffic cannot defer forever (yellow + all-red still
+    #: protect a committed vehicle when the cap forces the switch).
+    DILEMMA_DEFER_MAX = 8.0
     PRESSURE_BONUS_CAP = 5.0
     PRESSURE_BONUS_MULTIPLIER = 2
 
@@ -54,6 +59,7 @@ class TrafficLightController:
         self.green_time_road1 = self.MIN_GREEN_TIME
         self.green_time_road2 = self.MIN_GREEN_TIME
         self._pending_state: Optional[int] = None
+        self._dilemma_defer_start: Optional[float] = None
         # Timestamp when the current yellow phase began (early switch or
         # normal green expiry); None outside a changeover. Every switch is
         # routed through this stamp so a full yellow is always displayed,
@@ -108,6 +114,8 @@ class TrafficLightController:
         road2_leading_edge: Optional[int] = None,
         road1_approach_line: Optional[int] = None,
         road2_approach_line: Optional[int] = None,
+        road1_dilemma: bool = False,
+        road2_dilemma: bool = False,
     ) -> Dict[str, object]:
         current_time = self._time_func()
         elapsed_time = current_time - self.state_start_time
@@ -169,9 +177,20 @@ class TrafficLightController:
             # the opposing road actually has demand — an empty cross road is
             # never served on a timer.
             timeout_switch = elapsed_time >= self.green_time_road1 and road2_has_demand
-            if early_switch or self._yellow_start is not None or timeout_switch:
+            want_switch = early_switch or timeout_switch
+            if want_switch and self._yellow_start is None and road1_dilemma:
+                # Dilemma-zone guard: hold the green while a vehicle on the
+                # road losing it cannot stop comfortably, up to the cap.
+                if self._dilemma_defer_start is None:
+                    self._dilemma_defer_start = current_time
+                if current_time - self._dilemma_defer_start < self.DILEMMA_DEFER_MAX:
+                    want_switch = False
+            elif self._yellow_start is None:
+                self._dilemma_defer_start = None
+            if want_switch or self._yellow_start is not None:
                 if self._yellow_start is None:
                     self._yellow_start = current_time
+                    self._dilemma_defer_start = None
                 changeover_elapsed = current_time - self._yellow_start
                 signal_status["next_switch"] = True
                 if changeover_elapsed < self.YELLOW_TIME:
@@ -201,9 +220,18 @@ class TrafficLightController:
         else:
             # Rest-in-green (see the road-1 branch above).
             timeout_switch = elapsed_time >= self.green_time_road2 and road1_has_demand
-            if early_switch or self._yellow_start is not None or timeout_switch:
+            want_switch = early_switch or timeout_switch
+            if want_switch and self._yellow_start is None and road2_dilemma:
+                if self._dilemma_defer_start is None:
+                    self._dilemma_defer_start = current_time
+                if current_time - self._dilemma_defer_start < self.DILEMMA_DEFER_MAX:
+                    want_switch = False
+            elif self._yellow_start is None:
+                self._dilemma_defer_start = None
+            if want_switch or self._yellow_start is not None:
                 if self._yellow_start is None:
                     self._yellow_start = current_time
+                    self._dilemma_defer_start = None
                 changeover_elapsed = current_time - self._yellow_start
                 signal_status["next_switch"] = True
                 if changeover_elapsed < self.YELLOW_TIME:

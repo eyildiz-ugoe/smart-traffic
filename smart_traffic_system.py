@@ -731,16 +731,18 @@ class SmartTrafficSystem:
             self.cap_road1.release()
             self.cap_road2.release()
             if display_window and action != "exit":
+                from ui_text import T
+
                 card_action = show_end_card(
                     window_name,
-                    "Case 2 - Two-Road Intersection (Real, shadow mode)",
+                    T("Case 2 - Two-Road Intersection (Real, shadow mode)"),
                     [
-                        f"Frames analysed: {frame_count}",
-                        f"Signal switches: {switches}",
-                        f"Avg vehicles/frame  Road 1: "
-                        f"{self.stats_road1.avg_vehicles_per_frame:.2f}   Road 2: "
-                        f"{self.stats_road2.avg_vehicles_per_frame:.2f}",
-                        "Live YOLOv8 detection driving the adaptive plan.",
+                        T("Frames analysed: {n}").format(n=frame_count),
+                        T("Signal switches: {n}").format(n=switches),
+                        T("Avg vehicles/frame  Road 1: {a}   Road 2: {b}").format(
+                            a=f"{self.stats_road1.avg_vehicles_per_frame:.2f}",
+                            b=f"{self.stats_road2.avg_vehicles_per_frame:.2f}"),
+                        T("Live YOLOv8 detection driving the adaptive plan."),
                     ],
                 )
                 action = card_action or action
@@ -1099,10 +1101,10 @@ class SimulatedRoad:
 
 
 def _outlined_text(frame, text, org, scale=0.55, color=(255, 255, 255), thickness=2):
-    cv2.putText(frame, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale,
-                (0, 0, 0), thickness + 2, cv2.LINE_AA)
-    cv2.putText(frame, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale,
-                color, thickness, cv2.LINE_AA)
+    from demo_ui import draw_text
+
+    size = max(11, int(round(scale * 28)))
+    draw_text(frame, text, (org[0], org[1] - size), size=size, color=color)
 
 
 def draw_compact_signal(frame, signal: str, top_left: Tuple[int, int], label: str):
@@ -1112,12 +1114,14 @@ def draw_compact_signal(frame, signal: str, top_left: Tuple[int, int], label: st
     w, h = 26, 66
     cv2.rectangle(frame, (x, y), (x + w, y + h), (38, 38, 42), -1)
     cv2.rectangle(frame, (x, y), (x + w, y + h), (200, 200, 200), 1)
+    from ui_text import T
+
     lamps = [("RED", (0, 0, 220), y + 13), ("YELLOW", (0, 210, 230), y + 33),
              ("GREEN", (0, 200, 0), y + 53)]
     for name, color, cy in lamps:
         lit = signal == name
         cv2.circle(frame, (x + w // 2, cy), 8, color if lit else (70, 70, 70), -1)
-    _outlined_text(frame, label, (x - 8, y + h + 18), scale=0.5)
+    _outlined_text(frame, T(label), (x - 8, y + h + 18), scale=0.5)
 
 
 def draw_case2_hud(
@@ -1134,33 +1138,34 @@ def draw_case2_hud(
     outlined text, plus compact per-road signal housings — no overlapping
     widgets."""
 
-    active = "Road 1" if signal_status["active_road"] == "road1" else "Road 2"
+    from ui_text import T
+    from demo_ui import text_size
+
+    active_key = "Road 1 has GREEN" if signal_status["active_road"] == "road1" else "Road 2 has GREEN"
     remaining = signal_status.get("time_remaining")
     lines = [
-        (f"{active} has GREEN"
+        (T(active_key)
          if signal_status[signal_status["active_road"]] == "GREEN"
-         else f"Changing over ({signal_status['road1']} / {signal_status['road2']})",
+         else T("Changing over ({a} / {b})").format(
+             a=T(str(signal_status['road1'])), b=T(str(signal_status['road2']))),
          (255, 255, 255)),
-        (f"Road 1: {metrics1.count} cars   pressure {metrics1.pressure:.1f}", ROAD1_COLOR),
-        (f"Road 2: {metrics2.count} cars   pressure {metrics2.pressure:.1f}", ROAD2_COLOR),
-        (f"Switches: {switches}   elapsed: {sim_time:.0f} s", (255, 255, 255)),
+        (T("Road 1: {n} cars   pressure {v}").format(
+            n=metrics1.count, v=f"{metrics1.pressure:.1f}"), ROAD1_COLOR),
+        (T("Road 2: {n} cars   pressure {v}").format(
+            n=metrics2.count, v=f"{metrics2.pressure:.1f}"), ROAD2_COLOR),
+        (T("Switches: {n}   elapsed: {t} s").format(n=switches, t=f"{sim_time:.0f}"),
+         (255, 255, 255)),
     ]
     if isinstance(remaining, (int, float)):
-        lines.insert(1, (f"Phase ends in: {float(remaining):.1f} s", (255, 255, 255)))
+        lines.insert(1, (T("Phase ends in: {v} s").format(v=f"{float(remaining):.1f}"),
+                         (255, 255, 255)))
     if baseline_wait is not None and adaptive_wait is not None and baseline_wait > 1.0:
-        saved = baseline_wait - adaptive_wait
-        pct = 100.0 * saved / baseline_wait
-        lines.append((
-            f"Waiting vs fixed timer: {adaptive_wait:.0f}s vs {baseline_wait:.0f}s "
-            f"({pct:+.0f}% saved)"
-            if saved >= 0 else
-            f"Waiting vs fixed timer: {adaptive_wait:.0f}s vs {baseline_wait:.0f}s",
-            (80, 255, 120),
-        ))
+        pct = 100.0 * (baseline_wait - adaptive_wait) / baseline_wait
+        lines.append((T("Waiting vs fixed timer: {a} s vs {b} s ({p}% saved)").format(
+            a=f"{adaptive_wait:.0f}", b=f"{baseline_wait:.0f}", p=f"{pct:+.0f}"),
+            (80, 255, 120)))
 
-    panel_w = 12 + max(
-        cv2.getTextSize(t, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)[0][0] for t, _ in lines
-    )
+    panel_w = 12 + max(text_size(t, 15)[0] for t, _ in lines)
     overlay = frame.copy()
     cv2.rectangle(overlay, (8, 8), (8 + panel_w + 12, 20 + 24 * len(lines)),
                   (20, 20, 20), -1)
@@ -1174,10 +1179,10 @@ def draw_case2_hud(
     draw_compact_signal(frame, str(signal_status["road2"]), (width - 52, 14), "Road 2")
 
     # Identity labels drawn ON the roads, with direction-of-travel arrows.
-    _outlined_text(frame, "Road 1", (width // 2 + 68, 26), color=ROAD1_COLOR)
+    _outlined_text(frame, T("Road 1"), (width // 2 + 68, 26), color=ROAD1_COLOR)
     cv2.arrowedLine(frame, (width // 2 + 52, 12), (width // 2 + 52, 44),
                     ROAD1_COLOR, 2, tipLength=0.35)
-    _outlined_text(frame, "Road 2", (10, height // 2 - 72), color=ROAD2_COLOR)
+    _outlined_text(frame, T("Road 2"), (10, height // 2 - 72), color=ROAD2_COLOR)
     cv2.arrowedLine(frame, (12, height // 2 - 62), (44, height // 2 - 62),
                     ROAD2_COLOR, 2, tipLength=0.35)
     return frame
@@ -1367,6 +1372,12 @@ class SimulationTrafficSystem:
             road2_approach_line=frame_size[1] // 2,
         )
 
+    #: Standard dilemma-zone depth (pixels before the stop line), matching
+    #: Case 1's PedestrianCrossingSimulation.DILEMMA_ZONE_DEPTH.
+    DILEMMA_ZONE_DEPTH = 90
+    #: Detection band depth: the region the analyzer counts as demand.
+    DETECTION_ZONE_DEPTH = 150
+
     def _create_scene_background(self) -> np.ndarray:
         """Combine road backgrounds into a single intersection view."""
 
@@ -1374,7 +1385,45 @@ class SimulationTrafficSystem:
         road_overlay = np.maximum(self.road1.background, self.road2.background)
         mask = road_overlay > 0
         base[mask] = road_overlay[mask]
+
+        # Standard zone language (identical across all cases): teal shading
+        # for the detection zone, amber for the dilemma zone, with a dashed
+        # safe-stop boundary at the dilemma edge.
+        overlay = base.copy()
+        r1 = self.road1
+        det1 = (r1._lane_left, r1.stop_line - self.DETECTION_ZONE_DEPTH,
+                r1._lane_right, r1.stop_line)
+        dil1 = (r1._lane_left, r1.stop_line - self.DILEMMA_ZONE_DEPTH,
+                r1._lane_right, r1.stop_line)
+        r2 = self.road2
+        lane_top = self.frame_shape[0] // 2 - 60
+        lane_bottom = self.frame_shape[0] // 2 + 60
+        det2 = (r2.stop_line - self.DETECTION_ZONE_DEPTH, lane_top,
+                r2.stop_line, lane_bottom)
+        dil2 = (r2.stop_line - self.DILEMMA_ZONE_DEPTH, lane_top,
+                r2.stop_line, lane_bottom)
+        for x0, y0, x1, y1 in (det1, det2):
+            cv2.rectangle(overlay, (x0, y0), (x1, y1), (120, 120, 60), -1)
+        for x0, y0, x1, y1 in (dil1, dil2):
+            cv2.rectangle(overlay, (x0, y0), (x1, y1), (40, 110, 150), -1)
+        cv2.addWeighted(overlay, 0.30, base, 0.70, 0, base)
+        # Dashed safe-stop boundaries.
+        for x in range(r1._lane_left, r1._lane_right, 18):
+            cv2.line(base, (x, dil1[1]), (min(x + 9, r1._lane_right), dil1[1]),
+                     (0, 200, 255), 2)
+        for y in range(lane_top, lane_bottom, 18):
+            cv2.line(base, (dil2[0], y), (dil2[0], min(y + 9, lane_bottom)),
+                     (0, 200, 255), 2)
         return base
+
+    def _road_dilemma(self, road: SimulatedRoad) -> bool:
+        """A vehicle too close to the stop line to stop comfortably?"""
+
+        for vehicle in road.vehicles:
+            front = vehicle.position + vehicle.length
+            if front <= road.stop_line and (road.stop_line - front) <= self.DILEMMA_ZONE_DEPTH:
+                return True
+        return False
 
     def _process_simulated_road(
         self, road: SimulatedRoad, analyzer: VehicleQueueAnalyzer
@@ -1440,6 +1489,8 @@ class SimulationTrafficSystem:
                     road2_leading_edge=metrics2.leading_edge,
                     road1_approach_line=metrics1.approach_line,
                     road2_approach_line=metrics2.approach_line,
+                    road1_dilemma=self._road_dilemma(self.road1),
+                    road2_dilemma=self._road_dilemma(self.road2),
                 )
 
                 if self._current_signal["active_road"] != previous_active:
@@ -1452,8 +1503,6 @@ class SimulationTrafficSystem:
 
                 frame = draw_vehicle_annotations(frame, metrics1)
                 frame = draw_vehicle_annotations(frame, metrics2)
-                frame = draw_threshold_lines(frame, metrics1, self.queue_analyzer_road1)
-                frame = draw_threshold_lines(frame, metrics2, self.queue_analyzer_road2)
 
                 frame = draw_case2_hud(
                     frame, self._current_signal, metrics1, metrics2,
@@ -1475,25 +1524,22 @@ class SimulationTrafficSystem:
 
         finally:
             if display_window and action != "exit":
+                from ui_text import T
+
                 adaptive_wait = self.road1.total_wait + self.road2.total_wait
                 baseline_wait = self.baseline.total_wait()
-                saved_line = "Same traffic, fixed 20 s timer: no comparison yet"
+                lines = [
+                    T("Simulated time: {v} s").format(v=f"{self._sim_time:.0f}"),
+                    T("Signal switches: {n}").format(n=switches),
+                ]
                 if baseline_wait > 1.0:
                     pct = 100.0 * (baseline_wait - adaptive_wait) / baseline_wait
-                    saved_line = (
-                        f"Waiting time vs fixed 20 s timer: {adaptive_wait:.0f} s "
-                        f"vs {baseline_wait:.0f} s  ({pct:+.0f}%)"
-                    )
+                    lines.append(T("Waiting time vs fixed {c} s timer: {a} s vs {b} s ({p}%)").format(
+                        c=20, a=f"{adaptive_wait:.0f}", b=f"{baseline_wait:.0f}",
+                        p=f"{pct:+.0f}"))
+                lines.append(T("Identical cars ran in an invisible twin world under a dumb fixed timer - that is the saving."))
                 card_action = show_end_card(
-                    window_name,
-                    "Case 2 - Two-Road Intersection",
-                    [
-                        f"Simulated time: {self._sim_time:.0f} s",
-                        f"Signal switches: {switches}",
-                        saved_line,
-                        "Identical cars ran in an invisible twin world under",
-                        "a dumb fixed timer - that is the saving.",
-                    ],
+                    window_name, T("Case 2 - Two-Road Intersection"), lines,
                 )
                 action = card_action or action
             if display_window:

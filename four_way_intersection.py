@@ -61,6 +61,10 @@ class FourWayController:
     MAX_GREEN = 30.0
     YELLOW_TIME = 3.0
     ALL_RED_TIME = 1.5
+    #: A changeover is deferred while a vehicle on the axis losing green is
+    #: inside its dilemma zone — bounded so constant traffic cannot defer
+    #: forever (yellow + all-red still protect a committed vehicle).
+    DILEMMA_DEFER_MAX = 6.0
     #: Detector-failure recall: an axis is served after this much red even if
     #: no demand was *measured* there, so a dead camera or mis-calibrated
     #: zone can never starve an approach. Axes with detected demand are
@@ -77,6 +81,7 @@ class FourWayController:
         self.early_switches = 0
         self.total_switches = 0
         self._pending_early = False
+        self._dilemma_defer_start: Optional[float] = None
 
     def _elapsed(self) -> float:
         return self._time_func() - self.phase_start
@@ -89,8 +94,13 @@ class FourWayController:
     def _other(axis: str) -> str:
         return "EW" if axis == "NS" else "NS"
 
-    def update(self, counts: Dict[str, int]) -> Dict[str, object]:
-        """Advance the controller with per-approach vehicle counts."""
+    def update(self, counts: Dict[str, int],
+               active_dilemma: bool = False) -> Dict[str, object]:
+        """Advance the controller with per-approach vehicle counts.
+
+        ``active_dilemma``: a vehicle on the green axis is currently inside
+        its dilemma zone; the changeover start is deferred (bounded).
+        """
 
         now = self._time_func()
         active = self.active_axis
@@ -115,9 +125,19 @@ class FourWayController:
                 # approach (fixed-time recall, as real controllers do).
                 if not switch and cross_red_for >= self.MAX_RED:
                     switch = True
+            if switch and active_dilemma:
+                # Dilemma-zone guard: hold the green while a vehicle on the
+                # losing axis cannot stop comfortably, up to the cap.
+                if self._dilemma_defer_start is None:
+                    self._dilemma_defer_start = now
+                if now - self._dilemma_defer_start < self.DILEMMA_DEFER_MAX:
+                    switch = False
+            elif not switch:
+                self._dilemma_defer_start = None
             if switch:
                 # The active axis effectively goes red at yellow onset.
                 self._red_start[active] = now
+                self._dilemma_defer_start = None
                 self._enter("YELLOW")
         elif self.phase == "YELLOW":
             if self._elapsed() >= self.YELLOW_TIME:
@@ -287,6 +307,10 @@ class Approach:
 class FourWaySimulation:
     """Top-down synthetic crossroads with two-phase adaptive control."""
 
+    #: Standard dilemma-zone depth in logical units (a vehicle closer than
+    #: this to its stop line cannot stop comfortably).
+    DILEMMA_DEPTH = 50.0
+
     APPROACH_COLORS = {
         "N": (70, 180, 255),
         "S": (255, 180, 70),
@@ -369,15 +393,13 @@ class FourWaySimulation:
     ) -> None:
         """Draw outlined text at a logical position (readable on any ground)."""
 
-        org = (self.px(logical_org[0]), self.px(logical_org[1]))
-        cv2.putText(
-            frame, text, org, cv2.FONT_HERSHEY_SIMPLEX,
-            self._font_scale(mult), (0, 0, 0), self._thickness(mult) + 2, cv2.LINE_AA,
-        )
-        cv2.putText(
-            frame, text, org, cv2.FONT_HERSHEY_SIMPLEX,
-            self._font_scale(mult), color, self._thickness(mult), cv2.LINE_AA,
-        )
+        from demo_ui import draw_text
+
+        org = (self.px(logical_org[0]), self.px(logical_org[1]) - self._px_size(mult))
+        draw_text(frame, text, org, size=self._px_size(mult), color=color)
+
+    def _px_size(self, mult: float = 1.0) -> int:
+        return max(11, int(round(16 * self.scale * mult)))
 
     def _text_centered(
         self,
@@ -390,18 +412,10 @@ class FourWaySimulation:
     ) -> None:
         """Outlined text horizontally centred on a logical x position."""
 
-        (text_w, _), _ = cv2.getTextSize(
-            text, cv2.FONT_HERSHEY_SIMPLEX, self._font_scale(mult), self._thickness(mult)
-        )
-        org = (self.px(logical_center_x) - text_w // 2, self.px(logical_baseline_y))
-        cv2.putText(
-            frame, text, org, cv2.FONT_HERSHEY_SIMPLEX,
-            self._font_scale(mult), (0, 0, 0), self._thickness(mult) + 2, cv2.LINE_AA,
-        )
-        cv2.putText(
-            frame, text, org, cv2.FONT_HERSHEY_SIMPLEX,
-            self._font_scale(mult), color, self._thickness(mult), cv2.LINE_AA,
-        )
+        from demo_ui import draw_text
+
+        org = (self.px(logical_center_x), self.px(logical_baseline_y) - self._px_size(mult) // 2)
+        draw_text(frame, text, org, size=self._px_size(mult), color=color, center=True)
 
     # -- world -------------------------------------------------------------
     def counts(self) -> Dict[str, int]:
@@ -417,7 +431,14 @@ class FourWaySimulation:
         self._sim_time += dt
         for approach in self.approaches.values():
             approach.maybe_spawn(self.rng, dt)
-        status = self.controller.update(self.counts())
+        active_axis = self.controller.active_axis
+        active_dilemma = any(
+            0.0 < vehicle.distance <= self.DILEMMA_DEPTH
+            for name, approach in self.approaches.items()
+            if AXIS_OF[name] == active_axis
+            for vehicle in approach.vehicles
+        )
+        status = self.controller.update(self.counts(), active_dilemma=active_dilemma)
         signals: Dict[str, str] = status["signals"]  # type: ignore[assignment]
         for name, approach in self.approaches.items():
             approach.step(signals[name], dt)
@@ -472,11 +493,25 @@ class FourWaySimulation:
         ]
         for x0, y0, x1, y1 in zones:
             cv2.rectangle(overlay, (x0, y0), (x1, y1), (120, 120, 60), -1)
-        cv2.addWeighted(overlay, 0.25, frame, 0.75, 0, frame)
+        # Amber dilemma band directly before each stop line (standard
+        # across all cases).
+        dil = self.DILEMMA_DEPTH
+        dilemma_zones = [
+            (px(c - rw), px(c - so - dil), px(c), px(c - so)),          # N
+            (px(c), px(c + so), px(c + rw), px(c + so + dil)),          # S
+            (px(c + so), px(c - rw), px(c + so + dil), px(c)),          # E
+            (px(c - so - dil), px(c), px(c - so), px(c + rw)),          # W
+        ]
+        for x0, y0, x1, y1 in dilemma_zones:
+            cv2.rectangle(overlay, (x0, y0), (x1, y1), (40, 110, 150), -1)
+        cv2.addWeighted(overlay, 0.28, frame, 0.72, 0, frame)
         for x0, y0, x1, y1 in zones:
             cv2.rectangle(frame, (x0, y0), (x1, y1), (160, 160, 90), 1)
-        self._text(frame, "detection zone", (c - rw - 4.0, c - so - det - 8.0),
+        from ui_text import T
+        self._text(frame, T("detection zone"), (c - rw - 4.0, c - so - det - 8.0),
                    color=(190, 190, 130), mult=0.75)
+        self._text(frame, T("dilemma zone"), (c + so + 6.0, c + rw + 10.0),
+                   color=(150, 200, 230), mult=0.75)
 
         # Stop lines (one per approach, on the incoming half of each road).
         stop_th = self._thickness(1.5)
@@ -505,8 +540,8 @@ class FourWaySimulation:
     def _vehicle_rect(self, name: str, vehicle: ApproachVehicle) -> Tuple[int, int, int, int]:
         c, lo, so = self.center, self.lane_offset, self.stop_offset
         px = self.px
-        width = 20.0
         length = float(vehicle.length)
+        width = length / 2.0  # 2:1 proportions, consistent with all cases
         d = vehicle.distance
         if name == "N":  # southbound, drives on the west half, moving down
             front = c - so - d
@@ -559,50 +594,46 @@ class FourWaySimulation:
             )
         # Full approach name beneath the housing: traffic arriving FROM
         # that compass direction.
-        self._text_centered(frame, APPROACH_NAMES[name], lx + w / 2, ly + h + 18.0, mult=0.9)
+        from ui_text import T
+        self._text_centered(frame, T(APPROACH_NAMES[name]), lx + w / 2, ly + h + 18.0, mult=0.9)
 
     def _draw_hud(self, frame: "np.ndarray", status: Dict[str, object]) -> None:
+        from ui_text import T
+
         counts = self.counts()
-        axis_name = AXIS_NAMES[str(status["active_axis"])]
+        axis_name = T(AXIS_NAMES[str(status["active_axis"])])
         phase = str(status["phase"])
         phase_text = {
-            "GREEN": f"{axis_name} road has GREEN",
-            "YELLOW": f"{axis_name} road: YELLOW (changing)",
-            "ALL_RED": "All red (safety clearance)",
+            "GREEN": T("{axis} road has GREEN").format(axis=axis_name),
+            "YELLOW": T("{axis} road: YELLOW (changing)").format(axis=axis_name),
+            "ALL_RED": T("All red (safety clearance)"),
         }[phase]
         info = [
             phase_text,
-            "Cars waiting  North:%d  South:%d  East:%d  West:%d"
-            % (counts["N"], counts["S"], counts["E"], counts["W"]),
-            "Switches: %d (demand-driven: %d)"
-            % (status["total_switches"], status["early_switches"]),
-            "Avg wait  North-South: %.1fs  East-West: %.1fs"
-            % (
-                (self.approaches["N"].average_wait() + self.approaches["S"].average_wait()) / 2,
-                (self.approaches["E"].average_wait() + self.approaches["W"].average_wait()) / 2,
-            ),
+            T("Cars waiting  North:{n}  South:{s}  East:{e}  West:{w}").format(
+                n=counts["N"], s=counts["S"], e=counts["E"], w=counts["W"]),
+            T("Switches: {n} (demand-driven: {m})").format(
+                n=status["total_switches"], m=status["early_switches"]),
+            T("Avg wait  North-South: {a} s  East-West: {b} s").format(
+                a=f"{(self.approaches['N'].average_wait() + self.approaches['S'].average_wait()) / 2:.1f}",
+                b=f"{(self.approaches['E'].average_wait() + self.approaches['W'].average_wait()) / 2:.1f}"),
         ]
         remaining = status["time_remaining"]
         if remaining is not None:
-            info.insert(1, f"Phase ends in: {float(remaining):.1f}s")
+            info.insert(1, T("Phase ends in: {v} s").format(v=f"{float(remaining):.1f}"))
         baseline = self.baseline_wait()
         if baseline > 1.0:
             adaptive = self.adaptive_wait()
             pct = 100.0 * (baseline - adaptive) / baseline
-            info.append(
-                f"Waiting vs fixed 25s timer: {adaptive:.0f}s vs {baseline:.0f}s "
-                f"({pct:+.0f}% saved)"
-            )
+            info.append(T("Waiting vs fixed {c} s timer: {a} s vs {b} s ({p}% saved)").format(
+                c=25, a=f"{adaptive:.0f}", b=f"{baseline:.0f}", p=f"{pct:+.0f}"))
 
         # Translucent panel sized to the widest line, so no resolution or
         # wording change can push text outside the background.
+        from demo_ui import text_size
+
         line_h = 24.0
-        max_text_px = max(
-            cv2.getTextSize(
-                text, cv2.FONT_HERSHEY_SIMPLEX, self._font_scale(), self._thickness()
-            )[0][0]
-            for text in info
-        )
+        max_text_px = max(text_size(text, self._px_size())[0] for text in info)
         panel_w = max_text_px / self.scale + 24.0
         panel_h = 12.0 + line_h * len(info)
         overlay = frame.copy()
@@ -676,26 +707,23 @@ class FourWaySimulation:
                     (self.approaches["N"].average_wait() + self.approaches["S"].average_wait()) / 2,
                     (self.approaches["E"].average_wait() + self.approaches["W"].average_wait()) / 2,
                 )
+                from ui_text import T
+
                 baseline = self.baseline_wait()
                 adaptive = self.adaptive_wait()
-                saved_line = "Twin fixed-timer world: warming up"
+                lines = [
+                    T("Simulated time: {v} s").format(v=f"{self._sim_time:.0f}"),
+                    T("Switches: {n} (demand-driven: {m})").format(
+                        n=controller.total_switches, m=controller.early_switches),
+                ]
                 if baseline > 1.0:
                     pct = 100.0 * (baseline - adaptive) / baseline
-                    saved_line = (
-                        f"Waiting vs fixed 25 s timer: {adaptive:.0f} s vs "
-                        f"{baseline:.0f} s  ({pct:+.0f}%)"
-                    )
+                    lines.append(T("Waiting vs fixed {c} s timer: {a} s vs {b} s ({p}% saved)").format(
+                        c=25, a=f"{adaptive:.0f}", b=f"{baseline:.0f}", p=f"{pct:+.0f}"))
+                lines.append(T("Identical cars ran in an invisible twin world under a dumb fixed timer - that is the saving."))
+                lines.append(T("An empty road never holds a green hostage."))
                 card_action = show_end_card(
-                    window_name,
-                    "Case 3 - Four-Way Intersection",
-                    [
-                        f"Simulated time: {self._sim_time:.0f} s",
-                        f"Signal switches: {controller.total_switches} "
-                        f"(demand-driven: {controller.early_switches})",
-                        saved_line,
-                        "Identical cars ran in an invisible twin world under",
-                        "a dumb fixed timer - that is the saving.",
-                    ],
+                    window_name, T("Case 3 - Four-Way Intersection"), lines,
                 )
                 action = card_action or action
             if display_window:
@@ -856,6 +884,9 @@ class RealFourWayIntersection:
         zone_px: Dict[str, Tuple[int, int, int, int]],
         counts: Dict[str, int],
     ) -> "np.ndarray":
+        from demo_ui import draw_text
+        from ui_text import T
+
         out = frame.copy()
         signals: Dict[str, str] = status["signals"]  # type: ignore[assignment]
 
@@ -876,37 +907,28 @@ class RealFourWayIntersection:
         for det in parked:
             x, y, w, h = det.bbox
             cv2.rectangle(out, (x, y), (x + w, y + h), (140, 140, 140), 1)
-            cv2.putText(
-                out, "PARKED", (x, max(12, y - 4)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (140, 140, 140), 1, cv2.LINE_AA,
-            )
+            draw_text(out, T("PARKED"), (x, max(2, y - 16)), size=12,
+                      color=(140, 140, 140))
 
         for name, (zx, zy, zw, zh) in zone_px.items():
             signal = signals[name]
             color = {"GREEN": (0, 210, 0), "YELLOW": (0, 210, 230)}.get(signal, (0, 0, 220))
             cv2.rectangle(out, (zx, zy), (zx + zw, zy + zh), ZONE_COLORS[name], 2)
-            cv2.putText(
-                out,
-                f"{APPROACH_NAMES[name]}: {counts[name]} [{signal}]",
-                (zx + 4, zy + 16),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.45,
-                color,
-                1,
-                cv2.LINE_AA,
-            )
+            draw_text(out, f"{T(APPROACH_NAMES[name])}: {counts[name]} [{T(signal)}]",
+                      (zx + 4, zy + 4), size=13, color=color)
 
         # Slim translucent top strip instead of a video-blocking box.
         strip = out.copy()
         cv2.rectangle(strip, (0, 0), (out.shape[1], 26), (20, 20, 20), -1)
         cv2.addWeighted(strip, 0.6, out, 0.4, 0, out)
+        phase_tr = {"GREEN": T("GREEN"), "YELLOW": T("YELLOW"),
+                    "ALL_RED": T("RED")}.get(str(status["phase"]), str(status["phase"]))
         summary = (
-            f"SHADOW MODE   {AXIS_NAMES[str(status['active_axis'])]} {status['phase']}   "
-            f"switches {status['total_switches']} (demand {status['early_switches']})   "
-            f"parked ignored {len(parked)}"
+            f"{T('SHADOW MODE')}   {T(AXIS_NAMES[str(status['active_axis'])])} {phase_tr}   "
+            f"{T('switches {n} (demand {m})').format(n=status['total_switches'], m=status['early_switches'])}   "
+            f"{T('parked ignored {n}').format(n=len(parked))}"
         )
-        cv2.putText(out, summary, (10, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                    (255, 255, 255), 1, cv2.LINE_AA)
+        draw_text(out, summary, (10, 4), size=15)
         return out
 
     def run(
@@ -961,16 +983,17 @@ class RealFourWayIntersection:
             self.capture.release()
             if display_window and action != "exit":
                 controller = self.controller
+                from ui_text import T
+
                 card_action = show_end_card(
                     window_name,
-                    "Case 3 - Four-Way Intersection (Real, shadow mode)",
+                    T("Case 3 - Four-Way Intersection (Real, shadow mode)"),
                     [
-                        f"Frames analysed: {frame_count}",
-                        f"Signal switches: {controller.total_switches} "
-                        f"(demand-driven: {controller.early_switches})",
-                        f"Parked cars excluded from demand (max): {max_parked}",
-                        "Real detections, adaptive plan overlaid - no",
-                        "signal hardware touched.",
+                        T("Frames analysed: {n}").format(n=frame_count),
+                        T("Switches: {n} (demand-driven: {m})").format(
+                            n=controller.total_switches, m=controller.early_switches),
+                        T("Parked cars excluded from demand (max): {n}").format(n=max_parked),
+                        T("Real detections, adaptive plan overlaid - no signal hardware touched."),
                     ],
                 )
                 action = card_action or action
